@@ -30,9 +30,15 @@ BULLET_RE = re.compile(
 #: 强句末标点：上一行以它结尾 → 下一行开新段落
 ENDS_STRONG = "。！？!?…"
 
-#: 页眉页脚判定：在超过这个比例的页面上出现的行
+#: 页眉页脚判定
 BOILERPLATE_RATIO = 0.4
 BOILERPLATE_MIN_PAGES = 3
+#: 规则 B 用：短行（归一化后 3~24 字）在多页重复 → 也是页眉页脚
+BOILERPLATE_MIN_LEN = 3
+BOILERPLATE_MAX_LEN = 24
+#: 规则 B 排除：含句读标点的行是正文，不是页眉页脚
+#: （否则「第N页…，…」这类只差页码的模板句会被误判）
+_SENTENCE_PUNCT = re.compile(r"[，。；：！？,;:!?]")
 
 _CJK = re.compile(r"[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]")
 
@@ -55,34 +61,92 @@ def split_lines(text: str) -> list[str]:
 
 # ---------------------------------------------------------------- 页眉页脚
 
-def detect_boilerplate(pages: list[list[str]]) -> set[str]:
+def norm_key(line: str) -> str:
+    """把一行归一化成「页眉页脚指纹」。
+
+    三步（每一步都是踩坑踩出来的）：
+      1. **数字替换成 #**：页脚常是「普通化学24」，页码每页都变，
+         不归一化就永远匹配不上（第一版漏剥 45 处页脚的根因）。
+      2. **去掉所有空白**：PPT 排版空格不稳定，「普通化学 13」与「普通化学13」
+         必须视作同一条。
+      3. **掐掉首尾的 # 与分隔符**：「普通化学 2」归一化后是「普通化学#」，
+         而页首的「普通化学」是「普通化学」—— 不掐掉就仍然是两个键（GC02 的坑）。
+    """
+    s = re.sub(r"\d+", "#", line)
+    s = re.sub(r"\s+", "", s)
+    return s.strip("#·.、-—()（）[]【】")
+
+
+def detect_boilerplate(pages: list[list[str]]) -> dict[str, str]:
     """找出在多页重复出现的行（页眉 / 页脚 / 固定角标）。
 
-    只在页面**边缘位置**（前 2 行或后 2 行）统计，避免把正文里的常见短语误判。
+    用**两条规则取并集**——单用任何一条都会漏：
+
+      规则 A（边缘 + 不看长度）：在多页的**前 2 行或后 2 行**出现。
+         抓「绪 论」这种只有 2 个字、但每页都在页首的页眉。
+
+      规则 B（不限位置 + 必须是短行）：归一化后 3~24 字、且在多页重复。
+         抓「普通化学」这种位置飘忽（有时页首、有时页尾）的页脚。
+         限长度是为了不误伤正文里常见的短词（如 2 字的「化学」）。
+
+    返回 {归一化指纹: 代表原文}。
     """
     n = len(pages)
     if n < BOILERPLATE_MIN_PAGES:
-        return set()
-    counter: Counter[str] = Counter()
+        return {}
+
+    edge_counter: Counter[str] = Counter()
+    any_counter: Counter[str] = Counter()
+    sample: dict[str, str] = {}
+
     for lines in pages:
-        edge = set(lines[:2]) | set(lines[-2:])
-        for l in edge:
-            counter[l] += 1
+        for l in set(lines):
+            k = norm_key(l)
+            if not k:
+                continue
+            any_counter[k] += 1
+            sample.setdefault(k, l)
+        # 「边缘」只在行数够多的页上才有意义：只有 2 行的页会让每行都是边缘行
+        if len(lines) >= 4:
+            for l in set(lines[:2]) | set(lines[-2:]):
+                k = norm_key(l)
+                if k:
+                    edge_counter[k] += 1
+
     threshold = max(BOILERPLATE_MIN_PAGES, int(n * BOILERPLATE_RATIO))
-    return {l for l, c in counter.items() if c >= threshold}
+    found: dict[str, str] = {}
+    for k, c in edge_counter.items():           # 规则 A
+        if c >= threshold and not _SENTENCE_PUNCT.search(sample[k]):
+            found[k] = sample[k]
+    for k, c in any_counter.items():            # 规则 B
+        if c < threshold:
+            continue
+        if not (BOILERPLATE_MIN_LEN <= len(k) <= BOILERPLATE_MAX_LEN):
+            continue
+        if _SENTENCE_PUNCT.search(sample[k]):
+            continue
+        found[k] = sample[k]
+    return found
 
 
-def strip_boilerplate(lines: list[str], boilerplate: set[str]) -> list[str]:
-    """只在页面的前 2 行 / 后 2 行位置剥离页眉页脚。"""
+def strip_boilerplate(lines: list[str], boilerplate: dict[str, str],
+                      min_keep: int = 6) -> list[str]:
+    """剥离页眉页脚。
+
+    与第一版的关键差别：**不再限制在边缘位置**。规则 B 抓到的页脚位置是飘的
+    （GC02 的「普通化学」有时在页首、有时在页尾），只在边缘找会漏一半。
+    因为进这个集合的行必须满足「短 + 多页重复」，误伤正文的风险很低。
+
+    安全阀：如果剥完这页就空了（而原本有内容），就把剥离结果退回。
+    没有这一条，封面页会被整页剥光（GC02 第 1 页踩过）。
+    """
     if not boilerplate:
         return list(lines)
-    keep = []
-    last = len(lines) - 1
-    for i, l in enumerate(lines):
-        at_edge = i <= 1 or i >= last - 1
-        if at_edge and l in boilerplate:
-            continue
-        keep.append(l)
+    keys = set(boilerplate)
+    keep = [l for l in lines if norm_key(l) not in keys]
+
+    if len("".join(keep)) < min_keep <= len("".join(lines)):
+        return list(lines)   # 退回过剥
     return keep
 
 
@@ -134,7 +198,7 @@ def render_page_image(doc, index: int, out_path: str, scale: float = 1.6) -> Non
 
 # ---------------------------------------------------------------- 一页的组装
 
-def build_page(no: int, raw: str, boilerplate: set[str]) -> dict:
+def build_page(no: int, raw: str, boilerplate: dict[str, str]) -> dict:
     """单页 → 账本里的一个 page 记录。"""
     lines = split_lines(raw)
     kept = strip_boilerplate(lines, boilerplate)
@@ -146,7 +210,9 @@ def build_page(no: int, raw: str, boilerplate: set[str]) -> dict:
         "chars_clean": len(text),
         "text": text,
         "lines_removed": len(lines) - len(kept),
-        "is_blank": len(text) < 10,
+        # 「没有文字层」和「字数很少」是两回事：封面只有几个字，但文字层是有的
+        "has_text_layer": len(raw.strip()) > 0,
+        "is_blank": len(text.strip()) < 3,
     }
 
 
@@ -169,13 +235,15 @@ def ingest(pdf_path: str, images_dir: str | None = None, scale: float = 1.6,
     finally:
         doc.close()
 
-    running_head = ""
-    if boilerplate:
-        running_head = max(boilerplate, key=len).replace(" ", "")
+    # 页眉取「不含数字的最长那条」：带数字的是页脚（如「普通化学13」），
+    # 拿去做标题会很难看。没有候选时才退回带数字的。
+    cands = [v for v in boilerplate.values() if not re.search(r"\d", v)] \
+        or list(boilerplate.values())
+    running_head = max(cands, key=len).replace(" ", "") if cands else ""
 
     return {
         "pages": pages,
         "page_count": n,
-        "boilerplate": sorted(boilerplate),
+        "boilerplate": sorted(boilerplate.values()),
         "running_head": running_head,
     }

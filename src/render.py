@@ -48,8 +48,10 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True)
         if p.get("image") and include_images:
             out.append(f"![第 {p['no']} 页](../assets/{lecture['id']}/{p['image']})")
             out.append("")
-        if p.get("is_blank"):
-            out.append("*（本页没有文字层，请看上面的图）*")
+        if not p.get("has_text_layer", True):
+            out.append("*（本页没有文字层 —— 内容全在图上）*")
+        elif p.get("is_blank"):
+            out.append("*（本页几乎没有文字）*")
         else:
             for para in p["text"].split("\n"):
                 out.append(para)
