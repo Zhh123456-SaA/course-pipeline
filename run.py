@@ -29,6 +29,7 @@ except Exception:
     pass
 
 from ledger import Ledger, atomic_write_text, sha256_file  # noqa: E402
+import archive  # noqa: E402
 import pdf_source  # noqa: E402
 import render  # noqa: E402
 
@@ -119,12 +120,21 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
     report: list[str] = []
     index_items: list[dict] = []
 
+    arch = archive.load_archive(root)
+
     for stem in sorted(sources["sources"]):
         data = led.load_pages(stem)
         if data is None:
             report.append(f"[warn] {stem} 账本缺 pages 记录，跳过")
             continue
-        body = render.render_lecture_body(course, data, include_images=images)
+
+        # 归档进来的框选追问，按页号分组后交给渲染器
+        ann_by_page: dict[int, list[dict]] = {}
+        for a in archive.annotations_for_lecture(arch, stem):
+            ann_by_page.setdefault(int(a.get("page", 0)), []).append(a)
+
+        body = render.render_lecture_body(course, data, include_images=images,
+                                          annotations_by_page=ann_by_page)
         note_name = f"{stem}.md"
         title = stem
         if data.get("running_head"):
@@ -136,7 +146,8 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
             "page_count": data["page_count"],
             "running_head": data.get("running_head", ""),
         })
-        report.append(f"[note] {note_name}  {data['page_count']} 页")
+        ann_note = f"，含归档追问 {sum(len(v) for v in ann_by_page.values())} 条" if ann_by_page else ""
+        report.append(f"[note] {note_name}  {data['page_count']} 页{ann_note}")
 
     render.write_note(
         os.path.join(notes_dir, "_课程索引.md"),
@@ -144,6 +155,35 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         render.render_index_body(course, index_items),
     )
     report.append(f"[note] _课程索引.md  {len(index_items)} 讲")
+    return report
+
+
+# ---------------------------------------------------------------- archive
+
+def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
+    """把 ppt-deepreader 的框选追问归档进学习库账本。
+
+    数据源默认为用户实际在用的那份（D:\\1\\ppt-deepreader\\.pdw_work）；
+    代码依赖仍只指向真源（见 R14 / 冲突 C-4 的裁决）。
+    """
+    root = course_root(course)
+    led = ledger_of(course)
+    sources = led.load_sources()
+    roots = ann_roots or archive.DEFAULT_ANN_ROOTS
+
+    data, report = archive.build_archive(root, roots)
+    if not data["by_sha1"]:
+        report.append(f"[warn] 在 {roots} 下没找到任何批注（annotations.json）")
+        return report
+
+    slug_by_lecture = {stem: (rec.get("slug") or pdf_source.slugify(stem))
+                       for stem, rec in sources["sources"].items()}
+    n_crop = archive.copy_crops(data, root, slug_by_lecture)
+    archive.save_archive(root, data)
+
+    matched = sum(1 for r in data["by_sha1"].values() if r.get("lecture_id"))
+    report.append(f"[done ] {len(data['by_sha1'])} 组批注入账，"
+                  f"其中 {matched} 组匹配到学习库讲次；复制裁剪图 {n_crop} 张")
     return report
 
 
@@ -203,7 +243,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scale", type=float, default=1.6, help="页图缩放（默认 1.6）")
     ap.add_argument("--force", action="store_true", help="忽略缓存，强制重算")
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
-    ap.add_argument("action", choices=["ingest", "render", "all", "check", "clean"])
+    ap.add_argument("--ann-root", action="append", default=None,
+                    help="批注数据源目录（可多次；默认扫 D:\\1\\ppt-deepreader\\.pdw_work）")
+    ap.add_argument("action", choices=["ingest", "render", "archive", "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
@@ -212,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in ("ingest", "all"):
         lines += cmd_ingest(args.course, force=args.force,
                             images=not args.no_images, scale=args.scale)
+    if args.action in ("archive", "all"):
+        lines += cmd_archive(args.course, args.ann_root)
     if args.action in ("render", "all"):
         lines += cmd_render(args.course, images=not args.no_images)
     if args.action == "check":

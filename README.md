@@ -24,11 +24,37 @@
 | 切片 | 内容 | 状态 |
 |---|---|---|
 | **S1** | 讲义 PDF → 清洗 → 账本 → Obsidian 笔记（含每页批注位） | ✅ 完成 |
-| S2 | 用 AI 从讲义页提炼知识点（KC 骨架） | 🔜 进行中 |
-| S3 | 归档通道：ppt-deepreader 的精读产出自动进学习库 | ⬜ |
+| **S3** | **归档通道**：ppt-deepreader 的框选追问自动进学习库 | ✅ 完成 |
+| S2 | 用 AI 从讲义页提炼知识点（KC 骨架） | 🔜 下一步 |
 | S4 | Anki 卡片（带出处，可跳回原页） | ⬜ |
 | S5 | 学习循环 + 今日学习清单 | ⬜ |
 | S6 | 视频那一半（抽帧 + 字幕段落 ↔ 画面配对） | ⬜ |
+
+## 归档通道（S3）
+
+把 [ppt-deepreader](../ppt-deepreader) 的「框选追问」搬进学习库 —— 数据原本落在
+`<项目>/.pdw_work/pages/<sha1>/annotations.json`，而 `.pdw_work` 被 git 忽略，**删目录即丢**。
+
+```powershell
+python run.py --course 物理 archive                               # 只归档
+python run.py --course 物理 archive --ann-root "D:\别的\.pdw_work" # 换数据源
+python run.py --course 物理 all                                   # ingest → archive → render
+```
+
+**怎么知道一条批注属于哪一讲**：ppt-deepreader 用 `sha1(源文件全部字节)` 当页图/批注的目录名，
+所以对学习库 `source/` 里的 PDF 算 sha1 就能对上。对不上的批注**不会丢**，留在账本里，
+等你把对应讲义放进 `source/` 后重跑即可渲染。
+
+归档后每条追问挂在它所批注的**那一页**下面：
+
+```
+#### 🤖 追问记录 #1
+> **原文**：接触力③：张力…
+**❓ 我的问题**：怎么定义"收缩的方向？"
+<AI 的解答>
+![框选区域](../assets/…/ann/p010.jpg)
+*（模型 … · 时间 · token 数）*
+```
 
 ## 快速开始
 
@@ -50,6 +76,7 @@ python run.py --course 普通化学 check
 
 ```powershell
 python run.py --course <课程名> ingest           # 只摄取
+python run.py --course <课程名> archive          # 只归档批注（S3）
 python run.py --course <课程名> render           # 只渲染笔记
 python run.py --course <课程名> clean            # 删 assets/ 与 notes/（可从账本重建）
 python run.py --course <课程名> all --force      # 忽略缓存强制重算
@@ -61,9 +88,11 @@ python run.py --course <课程名> all --force      # 忽略缓存强制重算
 python tests\s1_idempotent.py    # 幂等 + 手写内容保护 + 账本可重建
 python tests\test_boilerplate.py # 页眉页脚剥离 + 图片链接合法性
 python tests\test_annotation.py  # 每页批注位 + 重渲染后批注不丢
+python tests\test_archive.py     # 归档通道：sha1 匹配 + 落账本 + 渲染 + 幂等
 ```
 
-三条都必须全绿才算通过。测试**不需要联网、不需要 API Key**。
+**四条都必须全绿才算通过**（当前 64 项）。测试**不需要联网、不需要 API Key**。
+`test_archive.py` 在批注数据源不存在时会自动跳过（不算失败）。
 
 ## 目录
 
@@ -73,9 +102,10 @@ course-pipeline/          程序
 ├── src/
 │   ├── ledger.py         账本读写（稳定序列化 + 原子写 + 内容指纹）
 │   ├── pdf_source.py     讲义提取（页眉页脚剥离 / 断行重排 / 页图渲染）
+│   ├── archive.py        归档通道（ppt-deepreader 批注 → 账本）
 │   └── render.py         账本 → Obsidian 笔记（生成块 + 每页批注位）
 ├── scripts/setup_vendor.py  建依赖库
-├── tests/                三个测试入口
+├── tests/                四个测试入口
 └── vendor/               自带的第三方库（脚本生成，不入库）
 
 ..\学习库\<课程名>\        数据（Obsidian 库）

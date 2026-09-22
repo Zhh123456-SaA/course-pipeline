@@ -77,15 +77,29 @@ HANDWRITTEN_SECTION = """## 我的笔记
 
 # ---------------------------------------------------------------- 拼装
 
-def render_lecture_body(course: str, lecture: dict, include_images: bool = True) -> str:
-    """渲染一篇讲义笔记的「生成块」内容。"""
+def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
+                        annotations_by_page: dict[int, list[dict]] | None = None) -> str:
+    """渲染一篇讲义笔记的「生成块」内容。
+
+    `annotations_by_page`：来自 ppt-deepreader 的框选追问（归档通道搬进来的），
+    按页号分组。渲染在讲义原文**之下**、你的手写批注位**之上**。
+    """
+    import archive as _archive   # 延迟导入，避免模块级循环依赖
+
+    ann_by_page = annotations_by_page or {}
     out: list[str] = []
     head = lecture.get("running_head") or ""
     # 图片目录用 slug（无空格/无禁用字符），否则 `![x](../assets/01 GC01/p.png)`
     # 在 CommonMark 里是非法链接，VS Code 预览与 GitHub 都显示不出图。
     slug = lecture.get("slug") or lecture["id"]
+
+    n_ann = sum(len(v) for v in ann_by_page.values())
     out.append(f"> 来源：`{lecture['file']}` ｜ 共 {lecture['page_count']} 页"
                + (f" ｜ 页眉：{head}" if head else ""))
+    if n_ann:
+        pages = "、".join(str(k) for k in sorted(ann_by_page))
+        out.append(">")
+        out.append(f"> 含 **{n_ann}** 条来自逐页精读器的追问记录（第 {pages} 页）")
     if lecture.get("boilerplate"):
         shown = "、".join(lecture["boilerplate"][:4])
         out.append(f">")
@@ -95,10 +109,11 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True)
     out.append("")
 
     for p in lecture["pages"]:
-        out.append(f"### 第 {p['no']} 页")
+        no = p["no"]
+        out.append(f"### 第 {no} 页")
         out.append("")
         if p.get("image") and include_images:
-            out.append(f"![第 {p['no']} 页](../assets/{slug}/{p['image']})")
+            out.append(f"![第 {no} 页](../assets/{slug}/{p['image']})")
             out.append("")
         if not p.get("has_text_layer", True):
             out.append("*（本页没有文字层 —— 内容全在图上）*")
@@ -107,9 +122,17 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True)
         else:
             for para in p["text"].split("\n"):
                 out.append(para)
+
+        # 归档进来的 AI 追问记录（来自逐页精读器的框选提问）
+        for a in ann_by_page.get(no, []):
+            out.append("")
+            out.append(f"#### 🤖 追问记录 #{a.get('no', '?')}")
+            out.append("")
+            out.append(_archive.render_annotation_md(a, slug))
+
         out.append("")
         # 每页紧跟一个批注位 —— 批注必须在被批注内容的旁边
-        out.append(annotation_block(p["no"]))
+        out.append(annotation_block(no))
         out.append("")
         out.append("---")
         out.append("")
