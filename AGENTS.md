@@ -26,7 +26,8 @@
 
 ```
 course-pipeline/          程序（代码）
-  vendor/                 自带的第三方库（wheel 解包，见 .course-tools/setup_vendor.py）
+  vendor/                 自带的第三方库（脚本生成，不入库）
+  scripts/setup_vendor.py 建依赖库（取 wheel 解包）
   src/                    源码
   tests/                  测试
   run.py                  命令行入口
@@ -49,7 +50,11 @@ python run.py --help
 
 - 无 bash、无 npm、无 DSH_CHECKOUT。
 - `pip install --target` 与 `python -m venv` 在本沙箱下都会失败 → 依赖一律用
-  `python ..\.course-tools\setup_vendor.py` 的方式取 wheel 解包到 `vendor/`。
+  `python scripts\setup_vendor.py` 取 wheel 解包到 `vendor/`（仓库自包含，克隆即可重建）。
 - 控制台是 GBK：**不要直接 print 中文/特殊符号**，一律写 UTF-8 文件再用读取工具看。
-- `github.com` 时通时断；HuggingFace 不通，模型源走 ModelScope。
-- ffmpeg / ffprobe 在 `..\.course-tools\bin`；yt-dlp 库版在 `..\.course-tools\pylibs`。
+- `github.com` 实测：**`http.sslBackend=schannel` 会报 `SEC_E_NO_CREDENTIALS`**，
+  改 `git config http.sslBackend openssl` 即通；走本地代理 `127.0.0.1:7897`。
+- **git 调编辑器会失败**（沙箱里 MSYS 的 `sh.exe`/`true.exe` 起不来，`Win32 error 5`）
+  → 任何需要编辑器的 git 操作都要用 `-m` / `-C` / `-F` 提供信息，或改走
+  「手动 commit + `git rebase --quit`」。
+- HuggingFace 不通，模型源走 ModelScope。
