@@ -87,6 +87,33 @@ for kc, why in bad_cases:
     ok, reason = K.check_kc(kc, {10})
     check(f"闸门拦下「{why}」", (not ok) and (why in reason), f"{ok} {reason}")
 
+# ★ v2 新增的两条硬过滤（用户实测反馈「太碎、了解的事实类太多」）
+ok_fact, why_fact = K.check_kc({**GOOD, "type": "fact"}, {10})
+check("不要 fact 类（信息密度低）", (not ok_fact) and "fact" in why_fact, why_fact)
+ok_info, why_info = K.check_kc({**GOOD, "importance": "info"}, {10})
+check("不要 info 级（了解即可）", (not ok_info) and "info" in why_info, why_info)
+
+# ★ 应用包装（用户原话「什么物理与医疗不要有」）
+for lb in ("骨折牵引中的张力控制", "压强与减压床垫", "摩擦的医学实例"):
+    ok_a, why_a = K.check_kc({**GOOD, "label": lb}, {10})
+    check(f"label 是应用包装要被拦：{lb}", (not ok_a) and "应用包装" in why_a, why_a)
+
+# ★ 要点级的应用包装：只剔那一条，其余保留
+kc_app = {**GOOD, "points": ["F = -kx，负号表示方向与形变相反。",
+                             "医学版本：血管壁的弹性可用胡克定律描述。",
+                             "k 为劲度系数，弹性限度内成立。"]}
+clean, removed = K.strip_applications(kc_app)
+check("剔掉带医学包装的那条要点", len(removed) == 1 and len(clean["points"]) == 2,
+      f"去 {len(removed)} 留 {len(clean['points'])}")
+check("  保留的要点没被误伤",
+      "F = -kx" in clean["points"][0] and "劲度系数" in clean["points"][1])
+
+kc_all_app = {**GOOD, "points": ["医学联系：血管弯曲处管壁承受附加压力。",
+                                 "临床对应：主动脉弓。"]}
+clean2, removed2 = K.strip_applications(kc_all_app)
+check("要点全是应用包装时整条作废（由调用方判定）", clean2["points"] == [],
+      str(clean2["points"]))
+
 # ---------------------------------------------------------------- 3 归一化与 id
 
 raw = [
@@ -128,20 +155,29 @@ check("悬空依赖不写进 deps（宁缺毋滥）", ghost[0]["deps"] == [], st
 # ---------------------------------------------------------------- 5 关联追问
 
 demo_kcs = [
-    {"id": "L05.1", "pages": [10], "questions": []},
-    {"id": "L05.2", "pages": [11], "questions": []},
+    {"id": "L05.1", "page": 10, "pages": [10], "questions": []},
+    {"id": "L05.2", "page": 11, "pages": [11], "questions": []},
 ]
 anns = [
     {"page": 10, "no": 1, "question": "怎么定义收缩的方向？", "created_at": "x"},
     {"page": 11, "no": 2, "question": "能不能举个反例？"},
     {"page": 10, "no": 3, "question": ""},        # 无提问，不挂
-    {"page": 99, "no": 4, "question": "没有对应知识点"},   # 无匹配页，不挂
+    {"page": 99, "no": 4, "question": "附近没有知识点"},   # 无匹配页，不挂
 ]
 n = K.link_questions(demo_kcs, anns)
 check("追问挂到对应页的知识点上", n == 2, f"挂了 {n} 条")
 check("  第 10 页的问题挂到 L05.1", demo_kcs[0]["questions"][0]["q"] == "怎么定义收缩的方向？")
 check("  第 11 页的问题挂到 L05.2", demo_kcs[1]["questions"][0]["q"] == "能不能举个反例？")
-check("  无提问的不挂", all(len(k["questions"]) == 1 for k in demo_kcs))
+
+# ★ 就近匹配：知识点跨页时模型只挑一个锚定页，精确匹配会漏。
+#   实测踩到：用户在第 10 页问张力，而合并后的「张力」知识点锚在第 11 页。
+near_kcs = [{"id": "L05.5", "page": 11, "pages": [11], "questions": []}]
+n_near = K.link_questions(near_kcs, [{"page": 10, "no": 1, "question": "怎么定义收缩的方向？"}])
+check("邻近页的追问也能挂上（跨页知识点）", n_near == 1, f"挂了 {n_near} 条")
+far_kcs = [{"id": "L05.9", "page": 30, "pages": [30], "questions": []}]
+n_far = K.link_questions(far_kcs, [{"page": 10, "no": 1, "question": "太远了"}])
+check("隔太远的追问不乱挂", n_far == 0, f"挂了 {n_far} 条")
+
 check("kcs_by_page 按页取",
       [k["id"] for k in K.kcs_by_page(demo_kcs, 10)] == ["L05.1"])
 
@@ -172,13 +208,34 @@ else:
     with open(NOTE, encoding="utf-8") as f:
         text = f.read()
     check("笔记里出现知识点块", "🎯" in text)
-    check("知识点挂在它出自的那一页下面",
-          "🎯" in text[text.find("### 第 10 页"):text.find("### 第 11 页")])
-    check("顺序：原文 → 知识点 → FAQ 追问 → 我的手写位",
-          (lambda i: i[0] < i[1] < i[2] < i[3] if all(x != -1 for x in i) else True)(
-              (text.find("### 第 10 页"), text.find("🎯", text.find("### 第 10 页")),
-               text.find("🤖 追问记录", text.find("### 第 10 页")),
-               text.find("批注区 p10 开始", text.find("### 第 10 页")))))
+
+    def page_section(body: str, no: int) -> str:
+        a = body.find(f"### 第 {no} 页")
+        if a == -1:
+            return ""
+        b = body.find(f"### 第 {no + 1} 页", a)
+        return body[a:b if b != -1 else len(body)]
+
+    # **不写死页号**：知识点会随 prompt 版本重排锚定页（v1 锚第 10 页、v2 锚第 11 页）。
+    # 从账本里挑一页「既有知识点、又有追问记录」的，才测得到完整顺序。
+    lec = next((c for c in chapters if c["id"].startswith("05")), chapters[0])
+    kc_pages = {int(k["page"]) for k in lec["kcs"]}
+    q_pages = {int(q["page"]) for k in lec["kcs"] for q in (k.get("questions") or [])}
+    both = sorted(kc_pages & q_pages)
+    probe = both[0] if both else sorted(kc_pages)[0]
+    sec = page_section(text, probe)
+    check(f"第 {probe} 页有知识点块", "🎯" in sec, sec[:60])
+
+    if both:
+        i_kc = sec.find("🎯")
+        i_q = sec.find("🤖 追问记录")
+        i_mine = sec.find(f"批注区 p{probe} 开始")
+        check(f"第 {probe} 页顺序：知识点 → 追问 → 我的手写位",
+              i_kc != -1 and i_q != -1 and i_mine != -1 and i_kc < i_q < i_mine,
+              f"kc={i_kc} q={i_q} mine={i_mine}")
+    else:
+        PASSES.append("（跳过顺序检查：没有同时含知识点与追问的页）")
+
     check("生成了知识点总览", os.path.exists(OVERVIEW))
     if os.path.exists(OVERVIEW):
         with open(OVERVIEW, encoding="utf-8") as f:

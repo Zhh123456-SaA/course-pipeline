@@ -30,8 +30,9 @@ from typing import Any, Iterable
 from ledger import atomic_write_json, content_hash, load_json
 import engine
 
-#: 改这个会让全部 KC 提取缓存失效（与 deepreader 的 PROMPT_VERSION 同思路）
-KC_PROMPT_VERSION = 1
+#: 改这个会让全部 KC 提取缓存失效（与 deepreader 的 PROMPT_VERSION 同思路）。
+#: v2：用户实测反馈「太碎 / 了解的事实类太多 / 医学包装要不得」→ 重写 prompt + 加硬过滤。
+KC_PROMPT_VERSION = 2
 
 #: 每批喂给模型多少页。太小会丢上下文、太大模型会走神且更容易截断。
 DEFAULT_WINDOW = 8
@@ -39,29 +40,59 @@ DEFAULT_WINDOW = 8
 TYPE_VALUES = ("concept", "principle", "procedure", "fact")
 IMPORTANCE_VALUES = ("must", "key", "freq", "info")
 
+#: **不要的类别**（用户明确要求）：
+#:   - type == fact：事实/数据/趣闻，信息密度低
+#:   - importance == info：「了解即可」的内容
+DROPPED_TYPES = ("fact",)
+DROPPED_IMPORTANCE = ("info",)
+
+#: 应用包装（医学/临床/工程/生活）。用户原话「什么物理与医疗不要有」。
+#: 这门课是医学类物理，模型很爱加医学外衣 —— prompt 里禁 + 闸门兜底，两层都要。
+_APP_RE = re.compile(
+    r"医学|临床|骨折|牵引|床垫|血管|神经|患者|病人|手术|治疗|绷带|压疮"
+    r"|人工关节|医用|医院|救护车|病房|医生|护理|诊断|生理|人体|义肢|插管|输液"
+)
+
 SYSTEM = """你在为一份大学课程讲义建立「知识点骨架」。
 
-知识点 = **可以单独学会、也能单独自测**的最小单元。
-它不是章节标题，也不是一句泛泛的概括。
+知识点 = **一个完整的、既能独立讲解也能独立自测的单元**。它不是一个细节，也不是章节标题。
 
-每个知识点输出这些字段：
-- label      : 短名称，不超过 20 字，要具体（例：「张力的定义与方向」而不是「力的分析」）
-- type       : concept（概念定义）| principle（原理/定理/定律）
-               | procedure（方法/步骤/算法）| fact（事实/公式/数据）
-- importance : must（必须掌握）| key（重要）| freq（常用）| info（了解即可）
-- points     : 2~4 条要点，每条一句话，写清「是什么 / 为什么 / 怎么用」
-- page       : 它主要出自第几页（**必须是我给出的页号之一**）
-- deps       : 它依赖同批里哪些知识点的 label（填 label 原文；没有就空数组 []）
-- is_hub     : 布尔。这个知识点是不是被后面反复用到的基础（像"牛顿第二定律"那样）？
+## 关键：要「厚」，不要「碎」
+
+反面（太碎，禁止）：把「牛顿第二定律」拆成「建立过程」「数学形式」「适用条件」三条。
+正面（合适）：合成一条「牛顿第二定律：形式、适用条件与常见误用」。
+
+**一份 8 页的讲义，通常只该产出 3~6 个知识点。宁少而厚，不要多而薄。**
+
+## 一律不要写这些（写了算不合格，会被程序剔除）
+
+1. **科学史、人物、年代、轶事** —— 例：「经典力学诞生的科学史」「伽利略的建模方法」。
+2. **应用包装**：医学、临床、工程、生活场景 —— 例：「骨折牵引中的张力控制」
+   「压强与减压床垫」「摩擦的医学实例」。
+   这门课虽然是医学类物理，但我要的是**物理本身**，不要医学外衣；
+   也**不要**在要点里写「在医学上…」「临床对应…」。
+3. **纯数据罗列** —— 例：「重力随纬度的变化」「水漏旋汇的半球方向」「某某常量表」。
+4. **type 为 fact** —— 「事实/数据/趣闻」信息密度太低。
+5. **importance 为 info** —— 「了解即可」的内容一律不要。
+
+## 每个知识点输出
+
+- label      : 不超过 20 字，是一个**知识块**而不是一个细节
+- type       : concept（概念定义）| principle（原理/定理/定律）| procedure（方法/步骤/算法）
+- importance : must（必须掌握）| key（重要）| freq（常用）
+- points     : 3~5 条，**每条都要带实信息** —— 公式、成立条件、适用范围、易错点、
+               推导的关键一步。**不要**写「这个概念很重要」这种空话，也**不要**写应用举例。
+- page       : 主要出自第几页（**必须是我给出的页号之一**）
+- deps       : 依赖同批里哪些知识点的 label（填 label 原文；没有就 []）
+- is_hub     : 布尔。它是不是被后面反复用到的基础（像「牛顿第二定律」那样）？
 
 只输出 JSON，不要任何解释、不要 markdown 围栏：
-{"kcs": [{"label": "...", "type": "concept", "importance": "must",
+{"kcs": [{"label": "...", "type": "principle", "importance": "must",
           "points": ["...", "..."], "page": 10, "deps": [], "is_hub": false}]}
 
 铁律：
-1. **宁少勿滥**。只提炼讲义里**真正讲了**的内容，不要脑补、不要补充课本外的东西。
-2. 同一页可以出多个知识点，也可以一个都不出（那页只是过渡的话）。
-3. 已经在「本讲已有知识点」里出现过的，**不要重复提炼**。"""
+1. 只提炼讲义里**真正讲了**的内容，不脑补、不补充课本外的东西。
+2. 已经在「本讲已有知识点」里出现过的，**不要重复提炼**。"""
 
 
 # ---------------------------------------------------------------- 工具
@@ -122,7 +153,13 @@ def render_questions(annotations: list[dict], window: list[int]) -> str:
 # ---------------------------------------------------------------- 质量闸门
 
 def check_kc(kc: dict, valid_pages: set[int]) -> tuple[bool, str]:
-    """单个知识点的质量闸门。照着「什么样的知识点算废」定的。"""
+    """单个知识点的质量闸门。照着「什么样的知识点算废」定的。
+
+    v2 起加了两条硬过滤（用户实测反馈「太碎、了解的事实类太多」）：
+      - `type == fact` 一律丢；
+      - `importance == info` 一律丢。
+    这不是"模型不该输出"，而是"即使输出了也不要" —— 闸门兜底比只靠 prompt 稳。
+    """
     if not isinstance(kc, dict):
         return False, "不是对象"
     label = str(kc.get("label") or "").strip()
@@ -136,6 +173,12 @@ def check_kc(kc: dict, valid_pages: set[int]) -> tuple[bool, str]:
         return False, f"type 非法：{kc.get('type')!r}"
     if str(kc.get("importance")) not in IMPORTANCE_VALUES:
         return False, f"importance 非法：{kc.get('importance')!r}"
+    if str(kc.get("type")) in DROPPED_TYPES:
+        return False, f"不要「{kc.get('type')}」类（信息密度低）"
+    if str(kc.get("importance")) in DROPPED_IMPORTANCE:
+        return False, f"不要「{kc.get('importance')}」级（了解即可）"
+    if _APP_RE.search(label):
+        return False, f"label 是应用包装：{label}"
     pts = kc.get("points")
     if not isinstance(pts, list) or not [p for p in pts if str(p).strip()]:
         return False, "points 为空"
@@ -146,6 +189,26 @@ def check_kc(kc: dict, valid_pages: set[int]) -> tuple[bool, str]:
     if page not in valid_pages:
         return False, f"page {page} 不在本批页号内"
     return True, ""
+
+
+def strip_applications(kc: dict) -> tuple[dict, list[str]]:
+    """去掉要点里的应用包装（医学/临床/工程/生活）。
+
+    prompt 里已经明令禁止，但实测模型仍会夹带 —— 例如
+    「弹性力与胡克定律」的要点里塞了一条「医学版本：血管壁的弹性…」。
+    这里把这类**单条要点**剔掉；若剔完全没了，整条知识点作废。
+    """
+    removed: list[str] = []
+    kept: list[str] = []
+    for p in kc.get("points") or []:
+        s = str(p).strip()
+        if _APP_RE.search(s):
+            removed.append(s[:40])
+        else:
+            kept.append(s)
+    out = dict(kc)
+    out["points"] = kept
+    return out, removed
 
 
 def normalize_kcs(raw_kcs: Iterable[dict], lecture_id: str, prefix: str,
@@ -292,6 +355,8 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
     label_to_id: dict[str, str] = {}
     reused = called = 0
     total_tokens = 0
+    drop_reasons: list[str] = []
+    app_points = 0
 
     for wi, win in enumerate(window_pages(usable, window), start=1):
         text = render_window_text(pages_by_no, win)
@@ -315,10 +380,16 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
         valid: list[dict] = []
         for kc in raw:
             ok, why = check_kc(kc, set(win))
-            if ok:
-                valid.append(kc)
-            else:
-                report.append(f"[drop ] 第 {win[0]}-{win[-1]} 页：{why}")
+            if not ok:
+                drop_reasons.append(why)
+                continue
+            cleaned, removed_pts = strip_applications(kc)
+            if removed_pts:
+                app_points += len(removed_pts)
+            if not cleaned.get("points"):
+                drop_reasons.append("要点全是应用包装")
+                continue
+            valid.append(cleaned)
         got, _ = normalize_kcs(valid, lecture_id, prefix, len(all_kcs), label_to_id)
         all_kcs.extend(got)
         if progress:
@@ -326,6 +397,25 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
 
     resolve_deps(all_kcs)
     _save_cache(library_root, cache)
+    if drop_reasons:
+        # 归类汇总（逐条打印太吵）
+        from collections import Counter as _C
+        def _bucket(r: str) -> str:
+            for key_name, pat in (("fact/info 类", r"不要「"),
+                                  ("应用包装", r"应用包装"),
+                                  ("空泛/太长", r"空泛|太长"),
+                                  ("字段非法", r"非法"),
+                                  ("页号越界", r"不在本批"),
+                                  ("要点问题", r"要点")):
+                if re.search(pat, r):
+                    return key_name
+            return "其他"
+        c = _C(_bucket(r) for r in drop_reasons)
+        report.append(f"[drop ] {lecture_id}：剔除 {len(drop_reasons)} 条 —— "
+                      + "、".join(f"{k} {v}" for k, v in c.most_common()))
+    if app_points:
+        report.append(f"[strip] {lecture_id}：从要点里剔掉 {app_points} 条应用包装"
+                      f"（医学/临床/工程外衣）")
     report.append(f"[kc   ] {lecture_id}：{len(all_kcs)} 个知识点"
                   f"（新算 {called} 批 / 命中缓存 {reused} 批，{total_tokens} token）")
     return all_kcs, report
@@ -333,11 +423,16 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
 
 # ---------------------------------------------------------------- 关联追问
 
-def link_questions(kcs: list[dict], annotations: list[dict]) -> int:
-    """把你的追问挂到知识点上（按页号匹配）。
+def link_questions(kcs: list[dict], annotations: list[dict], near: int = 2) -> int:
+    """把你的追问挂到知识点上。
 
     这是整个项目最有价值的一步：**知识点 ← 你真正问过的问题**。
     有了它，"这个知识点我卡过"就是可查的事实，而不是记忆。
+
+    匹配策略：**先精确页号，再就近（±near 页）**。
+    为什么需要"就近"：知识点会跨页，模型只挑一个锚定页。实测踩到 ——
+    用户在第 10 页问「怎么定义收缩的方向」，而合并后的「张力」知识点锚在第 11 页，
+    只按精确页匹配就会漏掉这一条。
     """
     n = 0
     for a in annotations:
@@ -348,15 +443,24 @@ def link_questions(kcs: list[dict], annotations: list[dict]) -> int:
         q = (a.get("question") or "").strip()
         if not q:
             continue
-        # 挂到「出处页 == 问题页」的知识点上；没有精确匹配就跳过（不乱挂）
-        for k in kcs:
+
+        target = None
+        for k in kcs:                                  # 1) 精确匹配
             if pg in (k.get("pages") or []):
-                k.setdefault("questions", []).append({
-                    "page": pg, "no": a.get("no"), "q": q,
-                    "created_at": a.get("created_at", ""),
-                })
-                n += 1
+                target = k
                 break
+        if target is None:                             # 2) 就近匹配（取最近的）
+            cands = [(abs(int(k.get("page") or 0) - pg), k) for k in kcs
+                     if abs(int(k.get("page") or 0) - pg) <= near]
+            if cands:
+                target = min(cands, key=lambda t: t[0])[1]
+        if target is None:
+            continue                                   # 3) 附近也没有 → 不乱挂
+        target.setdefault("questions", []).append({
+            "page": pg, "no": a.get("no"), "q": q,
+            "created_at": a.get("created_at", ""),
+        })
+        n += 1
     return n
 
 
