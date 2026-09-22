@@ -26,9 +26,9 @@ import os
 from typing import Any
 
 from ledger import atomic_write_json, content_hash, load_json
+import engine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEEPREADER = os.path.abspath(os.path.join(HERE, "..", "..", "ppt-deepreader"))
 
 #: 改这个会让全部出题缓存失效（与 deepreader 的 PROMPT_VERSION 同思路）
 QA_PROMPT_VERSION = 1
@@ -67,30 +67,16 @@ _BAD_PATTERNS = (
 
 
 def engine_available() -> tuple[bool, str]:
-    """探测 deepreader 引擎是否可用。返回 (可用, 说明)。"""
-    if not os.path.isdir(os.path.join(DEEPREADER, "src")):
-        return False, f"找不到真源引擎：{DEEPREADER}"
-    try:
-        _settings()
-        return True, "ok"
-    except Exception as e:  # noqa: BLE001 - 任何导入/配置失败都算不可用
-        return False, f"{type(e).__name__}: {e}"
+    """探测 deepreader 引擎是否可用（委托给 engine 模块）。"""
+    return engine.available()
 
 
 def _settings():
-    import sys
-    if DEEPREADER not in sys.path:
-        sys.path.insert(0, DEEPREADER)
-    from src.config import Settings          # noqa: PLC0415
-    return Settings.load()
+    return engine.settings()
 
 
 def _client():
-    import sys
-    if DEEPREADER not in sys.path:
-        sys.path.insert(0, DEEPREADER)
-    from src.llm import LLMClient            # noqa: PLC0415
-    return LLMClient(_settings())
+    return engine.client()
 
 
 # ---------------------------------------------------------------- 质量闸门
@@ -142,13 +128,9 @@ def _save_cache(library_root: str, d: dict) -> None:
 
 def _parse_question(text: str) -> str:
     """从模型返回里抠出 question。宽容优先，抠不出再退回整段文本。"""
-    import sys
-    if DEEPREADER not in sys.path:
-        sys.path.insert(0, DEEPREADER)
-    from src.llm import parse_json_lenient, strip_think   # noqa: PLC0415
-    t = strip_think(text or "").strip()
+    t = engine.strip_think(text or "").strip()
     try:
-        obj = parse_json_lenient(t)
+        obj = engine.parse_json(t)
         if isinstance(obj, dict) and obj.get("question"):
             return str(obj["question"]).strip()
         if isinstance(obj, list) and obj and isinstance(obj[0], dict):

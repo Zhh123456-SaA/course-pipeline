@@ -77,16 +77,78 @@ HANDWRITTEN_SECTION = """## 我的笔记
 
 # ---------------------------------------------------------------- 拼装
 
+#: 知识点类型/重要度的中文显示名（骨架里存的是英文枚举）
+_KC_TYPE_CN = {"concept": "概念", "principle": "原理", "procedure": "方法", "fact": "事实"}
+_KC_IMP_CN = {"must": "必须掌握", "key": "重要", "freq": "常用", "info": "了解"}
+_KC_IMP_STAR = {"must": "★★★", "key": "★★", "freq": "★", "info": "☆"}
+
+
+def render_kc_block(kc: dict) -> str:
+    """一个知识点 → markdown（挂在它所出的那一页下面）。"""
+    out: list[str] = []
+    t = _KC_TYPE_CN.get(kc.get("type"), kc.get("type", ""))
+    imp = _KC_IMP_CN.get(kc.get("importance"), kc.get("importance", ""))
+    star = _KC_IMP_STAR.get(kc.get("importance"), "")
+    hub = " · 🧭 枢纽" if kc.get("is_hub") else ""
+    out.append(f"##### 🎯 {kc.get('label', '')}　`{kc.get('id', '')}`")
+    out.append("")
+    out.append(f"> {t} · {imp} {star}{hub}")
+    for p in kc.get("points") or []:
+        out.append(f"> - {p}")
+    deps = kc.get("deps") or []
+    if deps:
+        out.append(f"> - 依赖：{'、'.join(deps)}")
+    for q in kc.get("questions") or []:
+        out.append(f"> - 💬 **你问过**：{q.get('q', '')}")
+    return "\n".join(out)
+
+
+def render_overview_body(course: str, chapters: list[dict]) -> str:
+    """课程级知识点总览。"""
+    total = sum(len(c.get("kcs") or []) for c in chapters)
+    n_must = sum(1 for c in chapters for k in (c.get("kcs") or [])
+                 if k.get("importance") == "must")
+    n_q = sum(1 for c in chapters for k in (c.get("kcs") or []) if k.get("questions"))
+    out: list[str] = [
+        f"> 共 **{total}** 个知识点（其中必须掌握 {n_must} 个，"
+        f"**{n_q} 个你问过问题**）。本页由程序生成，重跑会自动更新。",
+        "",
+    ]
+    for c in chapters:
+        kcs = c.get("kcs") or []
+        if not kcs:
+            continue
+        out.append(f"## {c.get('label') or c.get('id')}")
+        out.append("")
+        out.append("| id | 知识点 | 类型 | 重要度 | 出处页 | 你问过 |")
+        out.append("|---|---|---|---|---|---|")
+        for k in kcs:
+            t = _KC_TYPE_CN.get(k.get("type"), k.get("type", ""))
+            imp = _KC_IMP_CN.get(k.get("importance"), k.get("importance", ""))
+            pages = "、".join(str(p) for p in (k.get("pages") or []))
+            nq = len(k.get("questions") or [])
+            hub = " 🧭" if k.get("is_hub") else ""
+            out.append(f"| `{k.get('id','')}` | {k.get('label','')}{hub} | {t} | {imp} "
+                       f"| {pages} | {'💬 ' + str(nq) if nq else ''} |")
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
 def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
-                        annotations_by_page: dict[int, list[dict]] | None = None) -> str:
+                        annotations_by_page: dict[int, list[dict]] | None = None,
+                        kcs: list[dict] | None = None) -> str:
     """渲染一篇讲义笔记的「生成块」内容。
 
-    `annotations_by_page`：来自 ppt-deepreader 的框选追问（归档通道搬进来的），
-    按页号分组。渲染在讲义原文**之下**、你的手写批注位**之上**。
+    `annotations_by_page`：来自 ppt-deepreader 的框选追问（归档通道搬进来的）。
+    `kcs`：从这一讲提炼出来的知识点（S2），按页挂到对应页面下面。
+
+    每页的顺序固定为：**讲义原文 → 知识点 → AI 追问记录 → 我的手写批注位**。
     """
     import archive as _archive   # 延迟导入，避免模块级循环依赖
+    import kcs as _kcs
 
     ann_by_page = annotations_by_page or {}
+    kc_list = kcs or []
     out: list[str] = []
     head = lecture.get("running_head") or ""
     # 图片目录用 slug（无空格/无禁用字符），否则 `![x](../assets/01 GC01/p.png)`
@@ -122,6 +184,14 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
         else:
             for para in p["text"].split("\n"):
                 out.append(para)
+
+        # 这一页提炼出的知识点（S2）
+        page_kcs = _kcs.kcs_by_page(kc_list, no)
+        if page_kcs:
+            out.append("")
+            for k in page_kcs:
+                out.append(render_kc_block(k))
+                out.append("")
 
         # 归档进来的 AI 追问记录（来自逐页精读器的框选提问）
         for a in ann_by_page.get(no, []):

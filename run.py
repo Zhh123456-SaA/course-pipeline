@@ -31,6 +31,8 @@ except Exception:
 from ledger import Ledger, atomic_write_text, sha256_file  # noqa: E402
 import archive  # noqa: E402
 import cards as cards_mod  # noqa: E402
+import engine  # noqa: E402
+import kcs as kcs_mod  # noqa: E402
 import pdf_source  # noqa: E402
 import qa  # noqa: E402
 import render  # noqa: E402
@@ -123,6 +125,9 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
     index_items: list[dict] = []
 
     arch = archive.load_archive(root)
+    kcs_data = kcs_mod.load_kcs(root)
+    kcs_by_lecture = {c.get("id"): (c.get("kcs") or [])
+                      for c in kcs_data.get("chapters", [])}
 
     for stem in sorted(sources["sources"]):
         data = led.load_pages(stem)
@@ -135,8 +140,10 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         for a in archive.annotations_for_lecture(arch, stem):
             ann_by_page.setdefault(int(a.get("page", 0)), []).append(a)
 
+        lec_kcs = kcs_by_lecture.get(stem) or []
         body = render.render_lecture_body(course, data, include_images=images,
-                                          annotations_by_page=ann_by_page)
+                                          annotations_by_page=ann_by_page,
+                                          kcs=lec_kcs)
         note_name = f"{stem}.md"
         title = stem
         if data.get("running_head"):
@@ -149,7 +156,8 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
             "running_head": data.get("running_head", ""),
         })
         ann_note = f"，含归档追问 {sum(len(v) for v in ann_by_page.values())} 条" if ann_by_page else ""
-        report.append(f"[note] {note_name}  {data['page_count']} 页{ann_note}")
+        kc_note = f"，{len(lec_kcs)} 个知识点" if lec_kcs else ""
+        report.append(f"[note] {note_name}  {data['page_count']} 页{ann_note}{kc_note}")
 
     render.write_note(
         os.path.join(notes_dir, "_课程索引.md"),
@@ -157,6 +165,17 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         render.render_index_body(course, index_items),
     )
     report.append(f"[note] _课程索引.md  {len(index_items)} 讲")
+
+    # 知识点总览（只在真有骨架时才写）
+    chapters = [c for c in kcs_data.get("chapters", []) if c.get("kcs")]
+    if chapters:
+        render.write_note(
+            os.path.join(notes_dir, "_知识点总览.md"),
+            f"{course} · 知识点总览",
+            render.render_overview_body(course, chapters),
+        )
+        total = sum(len(c.get("kcs") or []) for c in chapters)
+        report.append(f"[note] _知识点总览.md  {total} 个知识点")
     return report
 
 
@@ -317,6 +336,56 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
     return report
 
 
+# ---------------------------------------------------------------- kcs
+
+def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
+    """从讲义页 + 你的追问里提炼知识点骨架（S2）。
+
+    - 按「页窗口」分批喂给模型（默认 8 页一批）；
+    - 每批**带上你在这个区间的追问**，并明确要求优先把它们提炼成知识点；
+    - 结果按窗口内容哈希缓存，没变就不重算（也不花钱）；
+    - 把追问按页号挂到对应知识点上（知识点 ← 你真正问过的问题）。
+    """
+    root = course_root(course)
+    led = ledger_of(course)
+    sources = led.load_sources()
+    if not sources["sources"]:
+        raise SystemExit("账本是空的，先跑 ingest。")
+    arch = archive.load_archive(root)
+
+    if not ai:
+        return ["[warn] --no-ai：知识点提取需要模型，已跳过"]
+    ok, why = engine.available()
+    if not ok:
+        return [f"[warn] 引擎不可用：{why}"]
+
+    data = kcs_mod.load_kcs(root)
+    data["title"] = f"{course} · 知识骨架"
+    report: list[str] = []
+
+    for stem in sorted(sources["sources"]):
+        pages_data = led.load_pages(stem)
+        if not pages_data:
+            report.append(f"[warn] {stem} 账本缺 pages 记录，跳过")
+            continue
+        anns = archive.annotations_for_lecture(arch, stem)
+        label = pages_data.get("running_head") or stem
+        found, rep = kcs_mod.extract_lecture(root, stem, label,
+                                             pages_data["pages"], anns,
+                                             window=window)
+        report += rep
+        n = kcs_mod.link_questions(found, anns)
+        if n:
+            report.append(f"[link ] {stem}：{n} 条追问挂到了知识点上")
+        kcs_mod.put_lecture(data, stem, label, found)
+
+    kcs_mod.save_kcs(root, data)
+    total = sum(len(c.get("kcs") or []) for c in data["chapters"])
+    report.append(f"[done ] 骨架共 {total} 个知识点，"
+                  f"已写入 .ledger/kcs.json（跑 render 会渲染进笔记）")
+    return report
+
+
 # ---------------------------------------------------------------- check
 
 def cmd_check(course: str) -> list[str]:
@@ -375,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
     ap.add_argument("--ann-root", action="append", default=None,
                     help="批注数据源目录（可多次；默认扫 D:\\1\\ppt-deepreader\\.pdw_work）")
+    ap.add_argument("--window", type=int, default=8,
+                    help="kcs 动作：每批喂给模型多少页（默认 8）")
     ap.add_argument("--prune", action="store_true",
                     help="cards 动作：删掉本次未构建的卡（默认不删，避免误删）")
     ap.add_argument("--no-ai", action="store_true",
@@ -384,7 +455,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sync", action="store_true",
                     help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
     ap.add_argument("action",
-                    choices=["ingest", "render", "archive", "cards", "all", "check", "clean"])
+                    choices=["ingest", "render", "archive", "cards", "kcs",
+                             "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
@@ -395,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
                             images=not args.no_images, scale=args.scale)
     if args.action in ("archive", "all"):
         lines += cmd_archive(args.course, args.ann_root)
+    if args.action in ("kcs", "all"):
+        lines += cmd_kcs(args.course, window=args.window, ai=not args.no_ai)
     if args.action in ("cards", "all"):
         lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild, ai=not args.no_ai, prune=args.prune)
     if args.action in ("render", "all"):

@@ -26,9 +26,61 @@
 | **S1** | 讲义 PDF → 清洗 → 账本 → Obsidian 笔记（含每页批注位） | ✅ 完成 |
 | **S3** | **归档通道**：ppt-deepreader 的框选追问自动进学习库 | ✅ 完成 |
 | **S4** | **Anki 卡片**：把追问变成带出处的卡片，一键推进 Anki | ✅ 完成 |
-| S2 | 用 AI 从讲义页提炼知识点（KC 骨架） | 🔜 下一步 |
+| **S2** | **知识点骨架**：讲义页 + 你的追问 → 可自测的知识点 | ✅ 完成 |
 | S5 | 学习循环 + 今日学习清单 | ⬜ |
 | S6 | 视频那一半（抽帧 + 字幕段落 ↔ 画面配对） | ⬜ |
+
+## 知识点骨架（S2）
+
+把讲义页 + **你的追问**提炼成「可以单独学会、也能单独自测」的知识点单元。
+
+```powershell
+python run.py --course 物理 kcs                 # 提炼知识点（需要引擎，结果有缓存）
+python run.py --course 物理 kcs --window 6      # 每批喂给模型多少页（默认 8）
+python run.py --course 物理 render              # 渲染进笔记 + 生成总览
+```
+
+产出落在账本 `.ledger/kcs.json`，笔记里**挂在知识点所出的那一页下面**：
+
+```
+### 第 10 页
+![第 10 页](…)
+接触力 ③：张力 §2.1 拉紧的绳（线）作用在物体上的力称为张力……
+
+##### 🎯 张力的定义与方向　`L05.1`
+> 概念 · 必须掌握 ★★★ · 🧭 枢纽
+> - 拉紧的绳（线）作用在物体上的力称为张力，它是绳对物体的拉力。
+> - 方向沿绳指向绳收缩的方向，即绳总想变短……
+> - 💬 **你问过**：怎么定义「收缩的方向」？
+```
+
+外加一篇 `_知识点总览.md`（表格：id / 知识点 / 类型 / 重要度 / 出处页 / 你问过）。
+
+### schema 复用已有资产
+
+严格沿用 `knowledge_skeleton.json` 的字段（C6）：
+`id` / `label` / `type` / `importance` / `deps` / `is_hub` / `source_refs`，
+外加三个本项目特有的：`points`（要点）、`pages`（出处页）、`questions`（你问过的问题）。
+
+`type` ∈ concept / principle / procedure / fact；
+`importance` ∈ must / key / freq / info；
+`deps` 只写**能解析成真实 id** 的依赖（悬空引用一律丢掉，宁缺毋滥）。
+
+### 两条设计要点
+
+1. **追问优先**：prompt 里明确要求「学生在这个区间问过的问题，请**优先**提炼成知识点」——
+   被问到的点一定是你真正卡住的地方。实测 8 页提炼出 13 个知识点，
+   你问过的「收缩的方向」「举一个反例」都被单独提炼成了知识点。
+
+2. **id 稳定**：`<讲次前缀>.<序号>`（如 `L05.7`）。提取结果按**窗口内容哈希**缓存，
+   没变就不重算 —— 于是 id 也不变，笔记里的引用不会指错地方。
+   改了 `KC_PROMPT_VERSION` 才可能重排。
+
+### 成本与速度
+
+按窗口分批（默认 8 页/批），每批带上该区间的追问与「本讲已有知识点」（防重复）。
+实测 8 页一批 ≈ **7000 token / 25 秒**。135 页的物理课 ≈ 18 批 ≈ 7 分钟。
+结果按内容哈希缓存，**重跑不花钱**。
 
 ## Anki 卡片（S4）
 
@@ -135,9 +187,10 @@ python tests\test_boilerplate.py # 页眉页脚剥离 + 图片链接合法性
 python tests\test_annotation.py  # 每页批注位 + 重渲染后批注不丢
 python tests\test_archive.py     # 归档通道：sha1 匹配 + 落账本 + 渲染 + 幂等
 python tests\test_cards.py       # 卡片身份稳定 + 不重复推送 + 中英字段映射 + AI 出题闸门
+python tests\test_kcs.py         # 知识点骨架：schema 复用 + id 稳定 + 闸门 + 追问挂载
 ```
 
-**五条都必须全绿才算通过**（当前 **121 项**）。测试**不需要联网、不需要 API Key**；
+**六条都必须全绿才算通过**（当前 **194 项**）。测试**不需要联网、不需要 API Key**；
 `test_archive.py` / `test_cards.py` 在数据源或 Anki 不可用时会自动跳过对应段落（不算失败）。
 
 ## 目录
@@ -150,7 +203,9 @@ course-pipeline/          程序
 │   ├── pdf_source.py     讲义提取（页眉页脚剥离 / 断行重排 / 页图渲染）
 │   ├── archive.py        归档通道（ppt-deepreader 批注 → 账本）
 │   ├── cards.py          Anki 卡片（身份稳定 + AnkiConnect 客户端）
-│   ├── qa.py             AI 出题（从解答反推题目，复用 deepreader 引擎）
+│   ├── engine.py         共享引擎（复用真源 deepreader 的 Settings + LLMClient）
+│   ├── qa.py             AI 出题（从解答反推题目）
+│   ├── kcs.py            知识点骨架（讲义页 + 追问 → KC）
 │   └── render.py         账本 → Obsidian 笔记（生成块 + 每页批注位）
 ├── scripts/setup_vendor.py  建依赖库
 ├── tests/                五个测试入口
