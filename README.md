@@ -114,7 +114,7 @@ python tests\test_archive.py     # 归档通道：sha1 匹配 + 落账本 + 渲�
 python tests\test_cards.py       # 卡片身份稳定 + 不重复推送 + 中英字段映射
 ```
 
-**五条都必须全绿才算通过**（当前 **98 项**）。测试**不需要联网、不需要 API Key**；
+**五条都必须全绿才算通过**（当前 **104 项**）。测试**不需要联网、不需要 API Key**；
 `test_archive.py` / `test_cards.py` 在数据源或 Anki 不可用时会自动跳过对应段落（不算失败）。
 
 ## 目录

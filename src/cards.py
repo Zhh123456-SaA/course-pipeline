@@ -41,15 +41,30 @@ def _esc(s: str) -> str:
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def render_front(transcript: str, question: str) -> str:
-    """正面：原文（给足语境）+ 当时的问题。"""
-    out: list[str] = []
-    tr = (transcript or "").strip()
-    if tr:
-        out.append(f'<div class="ctx">{_esc(tr).replace(chr(10), "<br>")}</div>')
-        out.append("<br>")
+def render_front(transcript: str, question: str, latex: str = "") -> str:
+    """正面：语境（原文，或退而用公式）+ 当时的问题。
+
+    **绝不再伪造通用问题**。第一版在 question 为空时塞了一句
+    「❓ 这一块讲的是什么？」，配上模型对模糊图片的描述 →
+    做出无法作答的垃圾卡（用户实测发现）。现在 question 为空直接报错，
+    由 build_cards 的闸门提前挡掉。
+    """
     q = (question or "").strip()
-    out.append(f"<b>❓ {_esc(q) if q else '这一块讲的是什么？'}</b>")
+    if not q:
+        raise ValueError(
+            "render_front 收到空问题：没有题目的卡片没有训练意义，"
+            "应当在 build_cards 里就被 has_question() 挡掉。"
+        )
+    out: list[str] = []
+    ctx = (transcript or "").strip()
+    if ctx:
+        out.append(f'<div class="ctx">{_esc(ctx).replace(chr(10), "<br>")}</div>')
+        out.append("<br>")
+    elif (latex or "").strip():
+        # 转录不可用（是画面描述）时的退路：直接给出公式当语境
+        out.append(f'<div class="ctx">\\[{_esc(latex)}\\]</div>')
+        out.append("<br>")
+    out.append(f"<b>❓ {_esc(q)}</b>")
     return "\n".join(out)
 
 
@@ -70,12 +85,44 @@ def render_back(explanation: str, latex: str, source: dict, thread_qa: dict | No
     return "\n".join(out)
 
 
+#: 「这段 transcript 其实是模型在描述画面、而不是在转写原文」的信号词。
+#: 实测样本：第 34 页的 transcript 是「画面上部是前序内容的截断局部…无法辨认完整公式…」——
+#: 模型自己都说读不出来，把它当语境放进正面毫无意义。
+_DESC_MARKERS = (
+    "无法辨认", "无法完整辨认", "无法看清", "残段", "截断局部",
+    "画面最右", "画面左上", "可见文字为", "露出",
+)
+
+
+def is_descriptive(transcript: str) -> bool:
+    """判断转录是不是「对画面的描述」而非原文。"""
+    t = transcript or ""
+    return any(m in t for m in _DESC_MARKERS)
+
+
+def has_question(ann: dict) -> bool:
+    """这条批注有没有**真问题**。
+
+    ppt-deepreader 允许留空提问（＝"解释这一块"）。那种批注没有题目，
+    硬做成卡就会出现「❓ 这一块讲的是什么？」配一段模糊图片描述 —— 无法作答。
+    实测踩过：9 张卡里有 2 张是这种垃圾卡（question 均为空）。
+    """
+    return bool((ann.get("question") or "").strip())
+
+
 def build_cards(course: str, lecture_id: str, source_file: str,
                 annotations: list[dict], slug: str,
-                crop_dir: str | None = None) -> list[dict]:
-    """一组批注 → 卡片列表（不落盘、不联网）。"""
+                crop_dir: str | None = None) -> tuple[list[dict], list[dict]]:
+    """一组批注 → (卡片列表, 被跳过的批注列表)。不落盘、不联网。
+
+    **只给有真问题的批注制卡**：卡片的价值来自"你自己问过的问题"，
+    问题为空就没有题目，做出来也是垃圾卡（见 has_question 的说明）。
+    被跳过的批注不丢 —— 它们留在账本里，等 S2 做知识点时可以再用。
+    """
     out: list[dict] = []
+    skipped: list[dict] = []
     deck = f"课程::{course}"
+
     for ann in annotations:
         page = int(ann.get("page", 0))
         no = int(ann.get("no", 0))
@@ -83,18 +130,34 @@ def build_cards(course: str, lecture_id: str, source_file: str,
         bbox_s = "[" + ", ".join(f"{float(x):.3f}" for x in bbox) + "]" if bbox else ""
         tr = ann.get("transcript", "")
         expl = ann.get("explanation", "")
+        latex = ann.get("latex", "")
         source = {"lecture": lecture_id, "file": source_file, "page": page, "bbox": bbox_s}
         crop = os.path.join(crop_dir, f"p{page:03d}.jpg") if crop_dir else None
+
+        # ---- 第一道闸：没有真问题 → 不制卡 ----
+        if not has_question(ann):
+            skipped.append({"page": page, "no": no, "reason": "无提问（留空＝解释这块）",
+                            "lecture": lecture_id})
+            continue
+        # 追问也要求有真问题；正文有真问题才继续
+
+        # ---- 第二道防线：转录是「画面描述」时不当语境，改用公式 ----
+        context = tr
+        ctx_kind = "原文"
+        if is_descriptive(tr):
+            ctx_kind = "公式" if latex else "（无可用语境）"
+            context = "" if latex else ""
 
         out.append({
             "id": card_id(ann.get("_sha1", ""), page, no),
             "deck": deck,
             "fields": {
-                "Front": render_front(tr, ann.get("question", "")),
-                "Back": render_back(expl, ann.get("latex", ""), source),
+                "Front": render_front(context, ann.get("question", ""), latex),
+                "Back": render_back(expl, latex, source),
             },
             "tags": ["course-pipeline", course, lecture_id, f"p{page}"],
             "source": source,
+            "context_kind": ctx_kind,
             "crop": crop if (crop and os.path.exists(crop)) else None,
         })
 
@@ -102,18 +165,23 @@ def build_cards(course: str, lecture_id: str, source_file: str,
         for i, t in enumerate(ann.get("thread") or [], start=1):
             if not isinstance(t, dict):
                 continue
+            if not (t.get("q") or "").strip():
+                skipped.append({"page": page, "no": no, "reason": f"追问 #{i} 无提问",
+                                "lecture": lecture_id})
+                continue
             out.append({
                 "id": card_id(ann.get("_sha1", ""), page, no, i),
                 "deck": deck,
                 "fields": {
-                    "Front": render_front(tr, t.get("q", "")),
+                    "Front": render_front(context, t.get("q", ""), latex),
                     "Back": render_back(t.get("a", ""), "", source),
                 },
                 "tags": ["course-pipeline", course, lecture_id, f"p{page}", "追问"],
                 "source": source,
+                "context_kind": ctx_kind,
                 "crop": None,
             })
-    return out
+    return out, skipped
 
 
 # ---------------------------------------------------------------- 账本
@@ -177,6 +245,41 @@ def export_tsv(cards: list[dict], path: str, notetype: str = "Basic",
         tags = " ".join(c["tags"]).replace("\t", " ")
         lines.append(f"{front}\t{back}\t{c['deck']}\t{tags}")
     atomic_write_text(path, "\n".join(lines) + "\n")
+
+
+def prune_cards(library_root: str, valid_ids: set[str]) -> list[dict]:
+    """把「按当前规则不该存在」的卡从账本里删掉，返回被删的条目。
+
+    为什么需要：规则会演进（例：实测发现「没有提问的批注不该制卡」，
+    于是 2 张垃圾卡必须退场）。不清理的话账本和 Anki 会永远留着它们。
+    """
+    data = load_cards(library_root)
+    by_id = data.get("by_id", {})
+    removed = [by_id[k] for k in list(by_id) if k not in valid_ids]
+    for k in [k for k in by_id if k not in valid_ids]:
+        del by_id[k]
+    if removed:
+        save_cards(library_root, data)
+    return removed
+
+
+def reset_deck(library_root: str, deck: str) -> int:
+    """清空牌组并重置账本里的 note id，返回删除的卡片数。
+
+    用途：制卡规则变更后做**彻底重建**。因为 Anki 的 note id 只在推送成功那一刻
+    才写进账本 —— 如果账本里的 id 中途丢了（实测被一个写坏的测试毁掉过一条），
+    就没法按 id 精确删除，只能整组重建。
+    """
+    ac = AnkiConnect()
+    if not ac.available():
+        raise AnkiError("AnkiConnect 不可用，无法重建牌组")
+    ids = ac.invoke("findNotes", query=f'"deck:{deck}"') or []
+    ac.delete_notes(ids)
+    data = load_cards(library_root)
+    for v in data.get("by_id", {}).values():
+        v.pop("anki_note_id", None)
+    save_cards(library_root, data)
+    return len(ids)
 
 
 # ---------------------------------------------------------------- AnkiConnect
@@ -270,6 +373,10 @@ class AnkiConnect:
 
     def add_notes(self, notes: list[dict]) -> list:
         return self.invoke("addNotes", notes=notes) or []
+
+    def delete_notes(self, note_ids: list[int]) -> None:
+        if note_ids:
+            self.invoke("deleteNotes", notes=list(note_ids))
 
 
 def to_anki_note(card: dict, model: str, field_map: dict[str, str],

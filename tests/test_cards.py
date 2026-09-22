@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Anki 卡片测试（离线可跑，不要求 Anki 正在运行）。
 
 每条断言对应一个真实约束：
@@ -14,8 +14,17 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+
+# Windows 控制台默认 GBK：print 中文/emoji 会抛 UnicodeEncodeError 并让退出码变 1
+# （明明全过却报失败）。强制 UTF-8 输出。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
@@ -66,6 +75,17 @@ check("背面带出处：框选区域", "框选" in back)
 check("HTML 特殊字符被转义（防注入/破版）",
       "&lt;script&gt;" in C.render_front("<script>alert(1)</script>", "q"))
 
+# ★ 空问题必须**报错**，不能再悄悄伪造一个通用问题（这是垃圾卡的根因）
+try:
+    C.render_front("某段原文", "")
+    check("空问题会让 render_front 报错（防垃圾卡复发）", False, "居然没报错")
+except ValueError:
+    check("空问题会让 render_front 报错（防垃圾卡复发）", True)
+
+# 转录是画面描述时，正面应改用公式当语境
+f_desc = C.render_front("", "这个公式怎么来的", "E=mc^2")
+check("转录不可用时用公式当语境", "E=mc^2" in f_desc and "❓" in f_desc)
+
 # ---------------------------------------------------------------- 3 从真数据构建
 
 arch = archive.load_archive(LIB)
@@ -73,7 +93,21 @@ if not arch.get("by_sha1"):
     print(f"跳过：{LIB} 账本里没有批注，先跑 archive")
     raise SystemExit(0)
 
+# ⚠️ 本测试会临时改 accounts 账本，先把原始字节备份好，最后**原样还原**。
+#    （踩过：早先版本直接改真实账本里第一条卡的 anki_note_id 再删掉，
+#      而那条恰好有真实的 Anki note id —— 把用户在 Anki 里的卡片搞丢了。）
+CARDS_PATH = C.cards_ledger_path(LIB)
+_orig_bytes = open(CARDS_PATH, "rb").read() if os.path.exists(CARDS_PATH) else None
+
+
+def restore_ledger() -> None:
+    if _orig_bytes is not None:
+        with open(CARDS_PATH, "wb") as f:
+            f.write(_orig_bytes)
+
+
 built: list[dict] = []
+skipped: list[dict] = []
 for sha, rec in arch["by_sha1"].items():
     if not rec.get("lecture_id"):
         continue
@@ -82,10 +116,12 @@ for sha, rec in arch["by_sha1"].items():
         b = dict(a)
         b["_sha1"] = sha
         anns.append(b)
-    built += C.build_cards(COURSE, rec["lecture_id"], rec.get("source_file", ""),
-                           anns, "slug", None)
+    made, sk = C.build_cards(COURSE, rec["lecture_id"], rec.get("source_file", ""),
+                             anns, "slug", None)
+    built += made
+    skipped += sk
 
-check("从真实批注构建出卡片", len(built) >= 8, f"{len(built)} 张")
+check("从真实批注构建出卡片", len(built) >= 7, f"{len(built)} 张")
 check("每张卡都有稳定 id", all(c.get("id") for c in built))
 check("每张卡都有正反面", all(c["fields"]["Front"] and c["fields"]["Back"] for c in built))
 check("每张卡带出处（讲次+页号）",
@@ -97,29 +133,60 @@ check("追问单独成卡（第 12 页那条）",
 ids = [c["id"] for c in built]
 check("卡片 id 无重复", len(ids) == len(set(ids)), f"{len(ids)} vs {len(set(ids))}")
 
+# ★ 质量闸门：没有提问的批注**不能**制卡
+#   只统计「匹配到讲次」的批注 —— 没匹配上的那组（自测用的 photoredox）
+#   本来就不参与制卡，算进来会把预期数字带偏（踩过）。
+n_noq = sum(1 for rec in arch["by_sha1"].values() if rec.get("lecture_id")
+            for a in rec["annotations"] if not (a.get("question") or "").strip())
+check("无提问的批注被跳过（实测：这类卡无法作答，被用户当场指出）",
+      len(skipped) == n_noq, f"跳过 {len(skipped)} 条，匹配到讲次的批注里无提问 {n_noq} 条")
+check("被跳过的批注**没有**混进卡片 id",
+      not any(":p034:" in c["id"] or ":p055:" in c["id"] for c in built)
+      or n_noq == 0,
+      str([c["id"] for c in built if ":p034:" in c["id"] or ":p055:" in c["id"]]))
+
+# ★ 正面绝不能出现伪造的通用问题
+check("正面不出现伪造的通用问题",
+      not any("这一块讲的是什么" in c["fields"]["Front"] for c in built))
+check("每张卡正面都有真问题（❓ 后面非空）",
+      all(re.search(r"❓\s*\S", c["fields"]["Front"]) for c in built))
+
+# ★ 「转录是画面描述」时不当语境（避免把模型对模糊图的描述塞进题面）
+desc_leak = [c["id"] for c in built
+             if C.is_descriptive(c["fields"]["Front"])]
+check("画面描述没有混进任何一张卡的正面", not desc_leak, str(desc_leak))
+
 # ---------------------------------------------------------------- 4 落账本 + 幂等
 
 run("--course", COURSE, "cards")
 data1 = C.load_cards(LIB)
-check("卡片已落账本 .ledger/cards.json", len(data1["by_id"]) >= 8, f"{len(data1['by_id'])} 张")
+check("卡片已落账本 .ledger/cards.json", len(data1["by_id"]) >= 7, f"{len(data1['by_id'])} 张")
 check("账本是落盘的 JSON", os.path.exists(C.cards_ledger_path(LIB)))
 
-# 模拟"已经推过 Anki"：手工写一个 note id，重跑必须保住它
-first_id = sorted(data1["by_id"])[0]
-data1["by_id"][first_id]["anki_note_id"] = 999999999
-C.save_cards(LIB, data1)
+# 模拟"已经推过 Anki"：挑一张**没有真实 note id** 的卡来打标记，跑完原样还原。
+# 绝不碰有真实 id 的卡 —— 那会把用户在 Anki 里的卡片搞丢（踩过）。
+victim = None
+for cid in sorted(data1["by_id"]):
+    if not data1["by_id"][cid].get("anki_note_id"):
+        victim = cid
+        break
+if victim is None:
+    PASSES.append("（跳过已推送标记测试：所有卡都已同步）")
+else:
+    data1["by_id"][victim]["anki_note_id"] = 999999999
+    C.save_cards(LIB, data1)
 
-run("--course", COURSE, "cards")
+    run("--course", COURSE, "cards")
+    data2 = C.load_cards(LIB)
+    check("重跑后已推送标记 **不被清掉**（否则会重复制卡）",
+          data2["by_id"][victim].get("anki_note_id") == 999999999,
+          str(data2["by_id"][victim].get("anki_note_id")))
+    check("重跑后卡片总数不变", len(data2["by_id"]) == len(data1["by_id"]),
+          f"{len(data2['by_id'])} vs {len(data1['by_id'])}")
+
+# 无论走哪条路，最终都还原成原始账本
+restore_ledger()
 data2 = C.load_cards(LIB)
-check("重跑后已推送标记 **不被清掉**（否则会重复制卡）",
-      data2["by_id"][first_id].get("anki_note_id") == 999999999,
-      str(data2["by_id"][first_id].get("anki_note_id")))
-check("重跑后卡片总数不变", len(data2["by_id"]) == len(data1["by_id"]),
-      f"{len(data2['by_id'])} vs {len(data1['by_id'])}")
-
-# 还原
-data2["by_id"][first_id].pop("anki_note_id", None)
-C.save_cards(LIB, data2)
 
 # ---------------------------------------------------------------- 5 导出
 
@@ -167,7 +234,7 @@ if ac.available():
     check("能挑到有正反两面的笔记类型（中文版没有 Basic 这个名字）",
           bool(model) and set(fmap) == {"Front", "Back"}, f"{model} {fmap}")
     ids_in_anki = ac.invoke("findNotes", query=f'"deck:课程::{COURSE}"')
-    check("Anki 里确有本课程的卡片", len(ids_in_anki) >= 8, f"{len(ids_in_anki)} 张")
+    check("Anki 里确有本课程的卡片", len(ids_in_anki) >= 7, f"{len(ids_in_anki)} 张")
 else:
     PASSES.append("（跳过 Anki 实时检查：AnkiConnect 未运行）")
 

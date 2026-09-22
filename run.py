@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """课程流水线入口（S1：讲义 PDF → 账本 → 笔记）。
 
 用法：
@@ -190,7 +190,7 @@ def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
 
 # ---------------------------------------------------------------- cards
 
-def cmd_cards(course: str, sync: bool = False) -> list[str]:
+def cmd_cards(course: str, sync: bool = False, rebuild: bool = False) -> list[str]:
     """把归档的追问变成 Anki 卡片。
 
     - 卡片身份稳定（源自 sha1+页号+序号），所以重跑不会重复制卡；
@@ -203,6 +203,7 @@ def cmd_cards(course: str, sync: bool = False) -> list[str]:
     arch = archive.load_archive(root)
 
     all_cards: list[dict] = []
+    all_skipped: list[dict] = []
     for sha, rec in sorted(arch.get("by_sha1", {}).items()):
         lec = rec.get("lecture_id")
         if not lec:
@@ -215,14 +216,33 @@ def cmd_cards(course: str, sync: bool = False) -> list[str]:
             b = dict(a)
             b["_sha1"] = sha
             anns.append(b)
-        all_cards += cards_mod.build_cards(course, lec, rec.get("source_file", ""),
-                                           anns, slug, crop_dir)
+        made, skipped = cards_mod.build_cards(course, lec, rec.get("source_file", ""),
+                                              anns, slug, crop_dir)
+        all_cards += made
+        all_skipped += skipped
 
     if not all_cards:
-        return ["[warn] 没有可制卡的追问 —— 先跑 archive（需账本里有匹配到讲次的批注）"]
+        msg = ["[warn] 没有可制卡的追问 —— 先跑 archive（需账本里有匹配到讲次的批注）"]
+        if all_skipped:
+            msg.append(f"[warn] 跳过 {len(all_skipped)} 条：全部是「留空＝解释这块」"
+                       f"（没有提问就没有题目，做出来是垃圾卡）")
+        return msg
 
     data, report = cards_mod.merge_cards(root, all_cards)
     cards_mod.save_cards(root, data)
+
+    # 按当前规则不该存在的卡（例如旧规则下没有提问也制了卡）→ 从账本剔除。
+    # 注意顺序：必须**先落盘 merge 的结果，再 prune** —— prune 自己会读盘+落盘，
+    # 如果反过来，最后那句 save(data) 会把 prune 删掉的条目又写回去（踩过）。
+    removed = cards_mod.prune_cards(root, {c["id"] for c in all_cards})
+    if removed:
+        report.append(f"[prune] 剔除 {len(removed)} 张不合规的卡："
+                      + "、".join(f"{r['source'].get('page')}页#{r['id'].split(':')[-1]}"
+                                  for r in removed))
+
+    if all_skipped:
+        report.append(f"[skip ] 跳过 {len(all_skipped)} 条无提问的批注（不制卡，但仍在账本里）："
+                      + "、".join(f"{s['page']}页" for s in all_skipped[:6]))
 
     # 探测目标 Anki 的笔记类型：中文版没有 Basic 这个名字（叫「问答题」），
     # 表头写错会导致导入失败或建出错误的类型。探测不到才退回 Basic。
@@ -243,7 +263,23 @@ def cmd_cards(course: str, sync: bool = False) -> list[str]:
                   f"（笔记类型 {notetype}，可直接用 Anki 导入）")
 
     if sync:
+        if rebuild:
+            try:
+                n = cards_mod.reset_deck(root, f"课程::{course}")
+                report.append(f"[anki ] 已清空牌组并重置账本（删除 {n} 张卡），准备重建")
+            except cards_mod.AnkiError as e:
+                report.append(f"[warn] 重建失败：{e}")
         report += cards_mod.sync_to_anki(root, all_cards)
+        # 被剔除的卡如果之前已经推给 Anki，这里一并删掉，别让它留在你的复习队列里
+        stale_ids = [r["anki_note_id"] for r in removed if r.get("anki_note_id")]
+        if stale_ids:
+            ac2 = cards_mod.AnkiConnect()
+            if ac2.available():
+                try:
+                    ac2.delete_notes(stale_ids)
+                    report.append(f"[anki ] 已从 Anki 删除 {len(stale_ids)} 张不合规的卡")
+                except cards_mod.AnkiError as e:
+                    report.append(f"[warn] 删除旧卡失败：{e}")
     else:
         report.append("[tip  ] 想直接推进 Anki：加 --sync（需 Anki 已打开）")
     return report
@@ -307,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
     ap.add_argument("--ann-root", action="append", default=None,
                     help="批注数据源目录（可多次；默认扫 D:\\1\\ppt-deepreader\\.pdw_work）")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="cards 动作：先清空牌组并重置账本，再全部重建（规则变更后用）")
     ap.add_argument("--sync", action="store_true",
                     help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
     ap.add_argument("action",
@@ -322,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in ("archive", "all"):
         lines += cmd_archive(args.course, args.ann_root)
     if args.action in ("cards", "all"):
-        lines += cmd_cards(args.course, sync=args.sync)
+        lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild)
     if args.action in ("render", "all"):
         lines += cmd_render(args.course, images=not args.no_images)
     if args.action == "check":
