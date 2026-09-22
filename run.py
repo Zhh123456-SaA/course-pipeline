@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """课程流水线入口（S1：讲义 PDF → 账本 → 笔记）。
 
 用法：
@@ -32,6 +32,7 @@ from ledger import Ledger, atomic_write_text, sha256_file  # noqa: E402
 import archive  # noqa: E402
 import cards as cards_mod  # noqa: E402
 import pdf_source  # noqa: E402
+import qa  # noqa: E402
 import render  # noqa: E402
 
 LIBRARY_ROOT = os.path.abspath(os.path.join(HERE, "..", "学习库"))
@@ -190,9 +191,12 @@ def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
 
 # ---------------------------------------------------------------- cards
 
-def cmd_cards(course: str, sync: bool = False, rebuild: bool = False) -> list[str]:
+def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
+              ai: bool = True, prune: bool = False) -> list[str]:
     """把归档的追问变成 Anki 卡片。
 
+    - **有提问**的批注 → 直接制卡（题面 = 你自己问过的问题）
+    - **没提问**的批注 → 用 AI 从**解答**反推一道题（复用真源 deepreader 的引擎）
     - 卡片身份稳定（源自 sha1+页号+序号），所以重跑不会重复制卡；
     - `anki_note_id` 存在账本里，已推过的不会再推；
     - 不加 --sync 时只生成 + 导出 TSV，不碰 Anki。
@@ -201,6 +205,21 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False) -> list[st
     led = ledger_of(course)
     sources = led.load_sources()
     arch = archive.load_archive(root)
+
+    report: list[str] = []
+
+    # 无提问的批注：用 AI 从解答反推题目（引擎来自真源 ppt-deepreader，兑现 R13）
+    provider = None
+    if ai:
+        ok, why = qa.engine_available()
+        if ok:
+            def provider(ann, _root=root):  # type: ignore[misc]
+                return qa.generate_question(_root, ann.get("explanation", ""),
+                                            ann.get("latex", ""))
+            report.append("[ai   ] 无提问的批注将用 AI 从解答反推题目"
+                          "（引擎复用真源 ppt-deepreader，结果有缓存）")
+        else:
+            report.append(f"[warn] AI 出题不可用：{why} —— 无提问的批注会被跳过")
 
     all_cards: list[dict] = []
     all_skipped: list[dict] = []
@@ -217,28 +236,41 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False) -> list[st
             b["_sha1"] = sha
             anns.append(b)
         made, skipped = cards_mod.build_cards(course, lec, rec.get("source_file", ""),
-                                              anns, slug, crop_dir)
+                                              anns, slug, crop_dir,
+                                              question_provider=provider)
         all_cards += made
         all_skipped += skipped
 
     if not all_cards:
         msg = ["[warn] 没有可制卡的追问 —— 先跑 archive（需账本里有匹配到讲次的批注）"]
-        if all_skipped:
-            msg.append(f"[warn] 跳过 {len(all_skipped)} 条：全部是「留空＝解释这块」"
-                       f"（没有提问就没有题目，做出来是垃圾卡）")
+        for s in all_skipped:
+            msg.append(f"[skip ] {s['lecture']} 第 {s['page']} 页：{s['reason']}")
         return msg
 
     data, report = cards_mod.merge_cards(root, all_cards)
     cards_mod.save_cards(root, data)
 
-    # 按当前规则不该存在的卡（例如旧规则下没有提问也制了卡）→ 从账本剔除。
-    # 注意顺序：必须**先落盘 merge 的结果，再 prune** —— prune 自己会读盘+落盘，
-    # 如果反过来，最后那句 save(data) 会把 prune 删掉的条目又写回去（踩过）。
-    removed = cards_mod.prune_cards(root, {c["id"] for c in all_cards})
-    if removed:
-        report.append(f"[prune] 剔除 {len(removed)} 张不合规的卡："
-                      + "、".join(f"{r['source'].get('page')}页#{r['id'].split(':')[-1]}"
-                                  for r in removed))
+    # 剔除「按当前规则不该存在」的卡 —— **必须显式 --prune**。
+    # 为什么不再自动：踩过两次 ——
+    #   ① 保存顺序写错，把剔除结果又写回去了；
+    #   ② 加 --no-ai 跑一次就会把 AI 卡全删掉（这次压根没构建它们）。
+    # 自动删除用户数据太危险，改成显式开关。
+    removed: list[dict] = []
+    if prune:
+        removed = cards_mod.prune_cards(root, {c["id"] for c in all_cards})
+        if removed:
+            report.append(f"[prune] 剔除 {len(removed)} 张不合规的卡："
+                          + "、".join(f"{r['source'].get('page')}页#{r['id'].split(':')[-1]}"
+                                      for r in removed))
+        else:
+            report.append("[prune] 没有需要剔除的卡")
+    else:
+        _valid = {c["id"] for c in all_cards}
+        stale = [c for c in cards_mod.load_cards(root).get("by_id", {}).values()
+                 if c["id"] not in _valid]
+        if stale:
+            report.append(f"[tip  ] 账本里有 {len(stale)} 张本次未构建的卡"
+                          f"（例如 {stale[0]['id']}）。确认要删就加 --prune")
 
     if all_skipped:
         report.append(f"[skip ] 跳过 {len(all_skipped)} 条无提问的批注（不制卡，但仍在账本里）："
@@ -343,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
     ap.add_argument("--ann-root", action="append", default=None,
                     help="批注数据源目录（可多次；默认扫 D:\\1\\ppt-deepreader\\.pdw_work）")
+    ap.add_argument("--prune", action="store_true",
+                    help="cards 动作：删掉本次未构建的卡（默认不删，避免误删）")
+    ap.add_argument("--no-ai", action="store_true",
+                    help="cards 动作：不用 AI 给无提问的批注出题")
     ap.add_argument("--rebuild", action="store_true",
                     help="cards 动作：先清空牌组并重置账本，再全部重建（规则变更后用）")
     ap.add_argument("--sync", action="store_true",
@@ -360,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in ("archive", "all"):
         lines += cmd_archive(args.course, args.ann_root)
     if args.action in ("cards", "all"):
-        lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild)
+        lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild, ai=not args.no_ai, prune=args.prune)
     if args.action in ("render", "all"):
         lines += cmd_render(args.course, images=not args.no_images)
     if args.action == "check":

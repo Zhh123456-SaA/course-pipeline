@@ -112,12 +112,19 @@ def has_question(ann: dict) -> bool:
 
 def build_cards(course: str, lecture_id: str, source_file: str,
                 annotations: list[dict], slug: str,
-                crop_dir: str | None = None) -> tuple[list[dict], list[dict]]:
-    """一组批注 → (卡片列表, 被跳过的批注列表)。不落盘、不联网。
+                crop_dir: str | None = None,
+                question_provider=None) -> tuple[list[dict], list[dict]]:
+    """一组批注 → (卡片列表, 被跳过的批注列表)。**本函数不联网**。
 
-    **只给有真问题的批注制卡**：卡片的价值来自"你自己问过的问题"，
-    问题为空就没有题目，做出来也是垃圾卡（见 has_question 的说明）。
-    被跳过的批注不丢 —— 它们留在账本里，等 S2 做知识点时可以再用。
+    两类批注两种处理：
+
+      1. **有真问题**（用户自己问的）→ 直接用他的问题，语境优先用讲义原文。
+      2. **没有真问题**（「留空＝解释这块」）→ 若给了 `question_provider`，
+         就**用 AI 从解答反推一道题**；反推失败（或没给 provider）就跳过。
+
+    `question_provider(ann) -> dict | None`，应返回 `{"question": str, ...}`。
+    把它做成注入的回调而不是在这里直接调 API，是为了让 build_cards 保持纯函数、
+    测试可以离线跑。
     """
     out: list[dict] = []
     skipped: list[dict] = []
@@ -134,51 +141,64 @@ def build_cards(course: str, lecture_id: str, source_file: str,
         source = {"lecture": lecture_id, "file": source_file, "page": page, "bbox": bbox_s}
         crop = os.path.join(crop_dir, f"p{page:03d}.jpg") if crop_dir else None
 
-        # ---- 第一道闸：没有真问题 → 不制卡 ----
-        if not has_question(ann):
-            skipped.append({"page": page, "no": no, "reason": "无提问（留空＝解释这块）",
-                            "lecture": lecture_id})
+        # 转录是「画面描述」时不当语境（否则会把模型对模糊图的描述塞进题面）
+        context = "" if is_descriptive(tr) else tr
+
+        if has_question(ann):
+            # ---- 用户自己问的 ----
+            out.append({
+                "id": card_id(ann.get("_sha1", ""), page, no),
+                "deck": deck,
+                "fields": {
+                    "Front": render_front(context, ann.get("question", "")),
+                    "Back": render_back(expl, latex, source),
+                },
+                "tags": ["course-pipeline", course, lecture_id, f"p{page}"],
+                "source": {**source, "kind": "user"},
+                "crop": crop if (crop and os.path.exists(crop)) else None,
+            })
+        elif question_provider is not None:
+            # ---- 没提问 → 用 AI 从解答反推 ----
+            gen = question_provider(ann) or {}
+            q = (gen.get("question") or "").strip()
+            if not q:
+                skipped.append({"page": page, "no": no, "lecture": lecture_id,
+                                "reason": "AI 反推题目失败：" + (gen.get("reason") or "未知")})
+                continue
+            out.append({
+                "id": card_id(ann.get("_sha1", ""), page, no),
+                "deck": deck,
+                "fields": {
+                    "Front": render_front("", q),        # 出题卡不给语境，避免泄题
+                    "Back": render_back(expl, latex, source),
+                },
+                "tags": ["course-pipeline", course, lecture_id, f"p{page}", "AI出题"],
+                "source": {**source, "kind": "ai",
+                           "model": gen.get("model", ""), "tokens": gen.get("tokens", 0)},
+                "crop": None,
+            })
+        else:
+            skipped.append({"page": page, "no": no, "lecture": lecture_id,
+                            "reason": "无提问（留空＝解释这块）且未启用 AI 出题"})
             continue
-        # 追问也要求有真问题；正文有真问题才继续
 
-        # ---- 第二道防线：转录是「画面描述」时不当语境，改用公式 ----
-        context = tr
-        ctx_kind = "原文"
-        if is_descriptive(tr):
-            ctx_kind = "公式" if latex else "（无可用语境）"
-            context = "" if latex else ""
-
-        out.append({
-            "id": card_id(ann.get("_sha1", ""), page, no),
-            "deck": deck,
-            "fields": {
-                "Front": render_front(context, ann.get("question", ""), latex),
-                "Back": render_back(expl, latex, source),
-            },
-            "tags": ["course-pipeline", course, lecture_id, f"p{page}"],
-            "source": source,
-            "context_kind": ctx_kind,
-            "crop": crop if (crop and os.path.exists(crop)) else None,
-        })
-
-        # 追问也各成一张卡（用上一轮解答当语境，保证自足）
+        # 追问也各成一张卡（有真问题的才做）
         for i, t in enumerate(ann.get("thread") or [], start=1):
             if not isinstance(t, dict):
                 continue
             if not (t.get("q") or "").strip():
-                skipped.append({"page": page, "no": no, "reason": f"追问 #{i} 无提问",
-                                "lecture": lecture_id})
+                skipped.append({"page": page, "no": no, "lecture": lecture_id,
+                                "reason": f"追问 #{i} 无提问"})
                 continue
             out.append({
                 "id": card_id(ann.get("_sha1", ""), page, no, i),
                 "deck": deck,
                 "fields": {
-                    "Front": render_front(context, t.get("q", ""), latex),
+                    "Front": render_front(context, t.get("q", "")),
                     "Back": render_back(t.get("a", ""), "", source),
                 },
                 "tags": ["course-pipeline", course, lecture_id, f"p{page}", "追问"],
-                "source": source,
-                "context_kind": ctx_kind,
+                "source": {**source, "kind": "user"},
                 "crop": None,
             })
     return out, skipped
@@ -202,25 +222,30 @@ def save_cards(library_root: str, data: dict) -> None:
 
 
 def merge_cards(library_root: str, new_cards: list[dict]) -> tuple[dict, list[str]]:
-    """把新卡并入账本；**保留已有的 anki_note_id**（否则重跑会重复制卡）。"""
+    """把新卡并入账本。
+
+    两条铁律：
+      - **保留已有的 `anki_note_id`**（否则重跑会重复制卡）；
+      - **其余字段一律以新构建的为准** —— 早先版本在"字段没变"时保留旧条目，
+        结果新加的元数据（如 source.kind）永远进不去，账本和代码脱节（踩过）。
+    """
     data = load_cards(library_root)
     by_id = data.setdefault("by_id", {})
     report: list[str] = []
     added = updated = 0
     for c in new_cards:
         old = by_id.get(c["id"])
+        note_id = (old or {}).get("anki_note_id")
+        merged = dict(c)
+        if note_id:
+            merged["anki_note_id"] = note_id
         if old is None:
-            by_id[c["id"]] = c
             added += 1
+        elif old != merged:
+            updated += 1
         else:
-            note_id = old.get("anki_note_id")
-            if old.get("fields") != c["fields"] or old.get("deck") != c["deck"]:
-                by_id[c["id"]] = c
-                updated += 1
-            else:
-                c = old
-            if note_id:
-                by_id[c["id"]]["anki_note_id"] = note_id
+            continue
+        by_id[c["id"]] = merged
     report.append(f"[cards] 新增 {added} 张，更新 {updated} 张，账本共 {len(by_id)} 张")
     return data, report
 

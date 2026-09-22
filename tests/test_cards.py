@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Anki 卡片测试（离线可跑，不要求 Anki 正在运行）。
 
 每条断言对应一个真实约束：
@@ -156,37 +156,96 @@ desc_leak = [c["id"] for c in built
              if C.is_descriptive(c["fields"]["Front"])]
 check("画面描述没有混进任何一张卡的正面", not desc_leak, str(desc_leak))
 
+# ---------------------------------------------------------------- 3b AI 出题
+import qa  # noqa: E402
+
+# 出题质量闸门（每条都是照着"什么样的问题算垃圾"定的）
+gate_cases = [
+    ("", False, "空"),
+    ("这一块讲的是什么？", False, "空泛"),
+    ("这段说明了什么？", False, "空泛"),
+    ("好", False, "太短"),
+    ("这个公式是怎么推出来的", False, "没有问号"),
+    ("第一行？\n第二行", False, "多行"),
+    ("A类不确定度为什么要除以根号n？", True, "合格"),
+]
+for q, want_ok, why in gate_cases:
+    ok, reason = qa.check_question(q)
+    check(f"出题闸门：{why} → {'通过' if want_ok else '拦下'}",
+          ok == want_ok, f"{q[:20]!r} → {ok} {reason}")
+
+# 用假 provider 验证「无提问 → AI 出题」这条路径（离线，不花钱）
+def fake_provider(_ann):
+    return {"question": "假问题：A类不确定度为什么要除以根号n？",
+            "model": "fake", "tokens": 1}
+
+
+ai_cards, _ai_skipped = C.build_cards(
+    COURSE, "基础物理实验数据课2026秋季(1)", "x.pdf",
+    [{"page": 34, "no": 1, "question": "", "explanation": "x" * 50,
+      "transcript": "画面上部是…残段…", "_sha1": "0e58b702feed" * 5}],
+    "slug", None, question_provider=fake_provider)
+check("无提问的批注：给了 provider 就出题", len(ai_cards) == 1, f"{len(ai_cards)} 张")
+if ai_cards:
+    _ac = ai_cards[0]
+    check("AI 卡打了 AI出题 标签", "AI出题" in _ac["tags"], str(_ac["tags"]))
+    check("AI 卡的 source.kind = ai", _ac["source"].get("kind") == "ai")
+    check("AI 卡正面**只有题目**（不给语境，避免泄题）",
+          "画面上部" not in _ac["fields"]["Front"]
+          and "假问题" in _ac["fields"]["Front"])
+    check("AI 卡背面仍有出处", "第 34 页" in _ac["fields"]["Back"])
+
+# 没给 provider 时，无提问的批注仍然被跳过（默认行为不变）
+_, skip_no_provider = C.build_cards(
+    COURSE, "基础物理实验数据课2026秋季(1)", "x.pdf",
+    [{"page": 34, "no": 1, "question": "", "explanation": "x" * 50, "_sha1": "a" * 40}],
+    "slug", None)
+check("没给 provider 时无提问的批注被跳过", len(skip_no_provider) == 1,
+      str(skip_no_provider))
+
+# provider 出题失败 → 不能硬塞，必须跳过并留下原因
+_, skip_bad = C.build_cards(
+    COURSE, "基础物理实验数据课2026秋季(1)", "x.pdf",
+    [{"page": 34, "no": 1, "question": "", "explanation": "x" * 50, "_sha1": "a" * 40}],
+    "slug", None, question_provider=lambda _a: {"question": "", "reason": "太短"})
+check("provider 出题失败时跳过且留下原因",
+      len(skip_bad) == 1 and "太短" in skip_bad[0]["reason"], str(skip_bad))
+
+# 引擎可用性（只探测，不发请求）
+_eng_ok, _eng_why = qa.engine_available()
+check("deepreader 引擎可被 course-pipeline 复用（R13）", _eng_ok, _eng_why)
+
 # ---------------------------------------------------------------- 4 落账本 + 幂等
 
-run("--course", COURSE, "cards")
+# 注意用 --no-ai：测试**不联网、不花钱**。
+# 也不能加 --prune —— 那会把账本里的 AI 卡删掉（它们这次没被构建）。
+run("--course", COURSE, "cards", "--no-ai")
 data1 = C.load_cards(LIB)
 check("卡片已落账本 .ledger/cards.json", len(data1["by_id"]) >= 7, f"{len(data1['by_id'])} 张")
 check("账本是落盘的 JSON", os.path.exists(C.cards_ledger_path(LIB)))
 
-# 模拟"已经推过 Anki"：挑一张**没有真实 note id** 的卡来打标记，跑完原样还原。
-# 绝不碰有真实 id 的卡 —— 那会把用户在 Anki 里的卡片搞丢（踩过）。
-victim = None
-for cid in sorted(data1["by_id"]):
-    if not data1["by_id"][cid].get("anki_note_id"):
-        victim = cid
-        break
-if victim is None:
-    PASSES.append("（跳过已推送标记测试：所有卡都已同步）")
-else:
-    data1["by_id"][victim]["anki_note_id"] = 999999999
-    C.save_cards(LIB, data1)
+# 模拟"已经推过 Anki"：改第一条卡再还原。
+# 账本已整体备份（见上），且跑完必定还原 —— 绝不能把用户在 Anki 里的 note id 搞丢。
+victim = sorted(data1["by_id"])[0]
+_real = data1["by_id"][victim].get("anki_note_id")
+data1["by_id"][victim]["anki_note_id"] = 999999999
+C.save_cards(LIB, data1)
 
-    run("--course", COURSE, "cards")
-    data2 = C.load_cards(LIB)
-    check("重跑后已推送标记 **不被清掉**（否则会重复制卡）",
-          data2["by_id"][victim].get("anki_note_id") == 999999999,
-          str(data2["by_id"][victim].get("anki_note_id")))
-    check("重跑后卡片总数不变", len(data2["by_id"]) == len(data1["by_id"]),
-          f"{len(data2['by_id'])} vs {len(data1['by_id'])}")
+run("--course", COURSE, "cards", "--no-ai")
+data2 = C.load_cards(LIB)
+check("重跑后已推送标记 **不被清掉**（否则会重复制卡）",
+      data2["by_id"][victim].get("anki_note_id") == 999999999,
+      str(data2["by_id"][victim].get("anki_note_id")))
+check("重跑后卡片总数不变", len(data2["by_id"]) == len(data1["by_id"]),
+      f"{len(data2['by_id'])} vs {len(data1['by_id'])}")
 
-# 无论走哪条路，最终都还原成原始账本
+# 无论走哪条路，最终都还原成原始账本（含真实 anki_note_id）
 restore_ledger()
 data2 = C.load_cards(LIB)
+check("测试结束后账本已还原成原样（真实 anki note id 没被动）",
+      (_real is None and data2["by_id"][victim].get("anki_note_id") is None)
+      or data2["by_id"][victim].get("anki_note_id") == _real,
+      f"{data2['by_id'][victim].get('anki_note_id')} vs {_real}")
 
 # ---------------------------------------------------------------- 5 导出
 
