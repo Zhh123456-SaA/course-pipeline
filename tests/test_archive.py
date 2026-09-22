@@ -92,8 +92,15 @@ target = [r for r in by_sha.values() if r.get("lecture_id") == lec]
 check(f"能定位到「{lec}」的批注", len(target) == 1, str([r.get("lecture_id") for r in by_sha.values()]))
 if target:
     rec = target[0]
-    check("该讲批注条数为 6", rec["count"] == 6, str(rec["count"]))
-    check("批注页号被记录", rec["pages"] == sorted(rec["pages"]), str(rec["pages"]))
+    # 条数**不写死**：用户会继续在 ppt-deepreader 里追问，写死会让测试天天变红。
+    # 真正要守的两件事：①账本记录条数 = 源数据条数；②原有那几条一条不少。
+    src_count = len(archive.load_annotations(ann_dirs[rec["sha1"]]))
+    check("账本条数与源数据一致", rec["count"] == src_count,
+          f"账本 {rec['count']} vs 源 {src_count}")
+    check("原有 6 条追问仍在", rec["count"] >= 6, str(rec["count"]))
+    check("原有页号仍在其中（10/11/12/13/21）",
+          {10, 11, 12, 13, 21} <= set(rec["pages"]), str(rec["pages"]))
+    check("批注页号已排序", rec["pages"] == sorted(rec["pages"]), str(rec["pages"]))
 
 unmatched = [r for r in by_sha.values() if not r.get("lecture_id")]
 check("学习库里没有对应讲义的批注**不丢**（仍留在账本，只是不渲染）",

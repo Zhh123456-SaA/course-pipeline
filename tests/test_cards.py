@@ -75,6 +75,67 @@ check("背面带出处：框选区域", "框选" in back)
 check("HTML 特殊字符被转义（防注入/破版）",
       "&lt;script&gt;" in C.render_front("<script>alert(1)</script>", "q"))
 
+# ---------------------------------------------------------------- 2b 转写清洗
+# ★ 用户实测发现：transcript 里散文与「半成品公式记号」混在一起
+#   （deepreader 的 prompt 要求「向量就写『向量P』」，那是为它自己网页显示做的妥协）。
+#   直接印在卡面很难看；而同一个批注的 latex 字段是干净的 —— 所以拆开、公式走 latex。
+REAL_VEC_TR = (
+    "当物体在转动参考系中还有相对运动时，除[惯性离心力外还会]出现科里奥利力。\n"
+    "向量F科 = -2m 向量ω × 向量v′ = 2m 向量v′ × 向量ω\n"
+    "F科 = 2m ω v′ sinθ"
+)
+REAL_VEC_LATEX = ("\\vec{F}_{\\text{科}}=-2m\\,\\vec{\\omega}\\times\\vec{v}'"
+                  "=2m\\,\\vec{v}'\\times\\vec{\\omega}\n\n"
+                  "F_{\\text{科}}=2m\\omega v'\\sin\\theta")
+
+check("散文行不被当成公式",
+      not C.looks_like_formula("当物体在转动参考系中还有相对运动时，除[惯性离心力外还会]出现科里奥利力。"))
+check("「向量X」记号被识别为公式行",
+      C.looks_like_formula("向量F科 = -2m 向量ω × 向量v′ = 2m 向量v′ × 向量ω"))
+check("纯符号公式行被识别", C.looks_like_formula("F科 = 2m ω v′ sinθ"))
+check("普通中文句子不被误判", not C.looks_like_formula("力是物体之间的相互作用。"))
+
+# ★ 组合箭头（U+20D7）是「向量箭头」，deepreader 的 prompt 要求别用但仍会漏出来。
+#   不认它，整行就会被误当散文 —— 实测漏网：卡面同时出现「即 P⃗ = m g⃗」和它的
+#   LaTeX，重复又难看。
+check("组合箭头向量式被识别（实测漏网的那条）",
+      C.looks_like_formula("即 P\u20d7 = m g\u20d7"))
+check("带中文标注的 LaTeX 行被识别",
+      C.looks_like_formula("(x_i,y_i) y_i-\\hat y_i（紫色箭头向右）"))
+check("纯标题行不被误判", not C.looks_like_formula("接触力③：张力"))
+check("无符号的中文散文不被误判",
+      not C.looks_like_formula("车中观察者 看到 B 静止不动 却观察到弹簧被拉伸 牛顿定律「失效」"))
+check("带括号的散文不被误判（括号不算数学符号）",
+      not C.looks_like_formula("当物体还有相对运动时，除[惯性离心力外还会]出现科里奥利力。"))
+
+# 组合箭头那一条：正面的公式必须走 latex，不能再出现裸的 P⃗
+front_arrow = C.render_front("即 P\u20d7 = m g\u20d7", "这里的P是什么", "\\vec{P}=m\\vec{g}")
+check("★ 组合箭头残式不再上卡面", "\u20d7" not in front_arrow)
+check("★ 改用规范 LaTeX", "\\vec{P}=m\\vec{g}" in front_arrow)
+
+prose, formulas = C.split_transcript(REAL_VEC_TR)
+check("拆出 1 行散文", prose.count("\n") == 0 and "科里奥利力" in prose, prose[:30])
+check("拆出 2 行公式", len(formulas) == 2, f"{len(formulas)} 行")
+check("散文里没有「向量F科」残渣", "向量F科" not in prose)
+
+check("latex 按空行拆成多条", len(C.latex_blocks(REAL_VEC_LATEX)) == 2,
+      str(C.latex_blocks(REAL_VEC_LATEX)))
+
+front_vec = C.render_front(REAL_VEC_TR, "这个是怎么来的", REAL_VEC_LATEX)
+check("★ 卡面不再出现「向量F科」半成品记号", "向量F科" not in front_vec)
+check("★ 卡面改用规范 LaTeX", "\\vec{F}_{\\text{科}}" in front_vec)
+check("  两条公式都在", front_vec.count("\\[") == 2, str(front_vec.count("\\[")))
+check("  散文语境保留", "科里奥利力" in front_vec)
+check("  问题还在", "❓ 这个是怎么来的" in front_vec)
+
+# 没有 latex 时的退路：公式行原样给出，别让正面空着
+front_nolatex = C.render_front("向量F = ma", "这式子哪来的", "")
+check("没有 latex 时退化为原样给公式行（不空着）", "向量F = ma" in front_nolatex)
+
+# 纯散文（没有公式）的老行为不变
+front_plain = C.render_front("接触力③：张力", "怎么定义收缩的方向？", "")
+check("没有公式的转写行为不变", "接触力③" in front_plain and "❓" in front_plain)
+
 # ★ 空问题必须**报错**，不能再悄悄伪造一个通用问题（这是垃圾卡的根因）
 try:
     C.render_front("某段原文", "")
@@ -246,6 +307,42 @@ check("测试结束后账本已还原成原样（真实 anki note id 没被动�
       (_real is None and data2["by_id"][victim].get("anki_note_id") is None)
       or data2["by_id"][victim].get("anki_note_id") == _real,
       f"{data2['by_id'][victim].get('anki_note_id')} vs {_real}")
+
+# ---------------------------------------------------------------- 4b 同步状态与更新
+# ★ 只推新卡是不够的：卡片内容会随规则改进而变（例：正面从「向量F科 = …」
+#   改成规范 LaTeX）。账本更新了、Anki 里却停在旧版 —— 用户看到过期内容。
+#   所以要有 synced_fields 指纹来识别"过时"，并调 updateNoteFields。
+
+check("内容指纹只取决于正反面",
+      C.fields_fingerprint({"fields": {"Front": "a", "Back": "b"}, "deck": "X"})
+      == C.fields_fingerprint({"fields": {"Front": "a", "Back": "b"}, "deck": "Y"}))
+check("内容变了指纹就变",
+      C.fields_fingerprint({"fields": {"Front": "a", "Back": "b"}})
+      != C.fields_fingerprint({"fields": {"Front": "a", "Back": "c"}}))
+
+# merge_cards 必须保留同步状态：否则每次重跑都误判"内容变了"→ 反复更新 Anki
+probe_id = "deadbeef0000:p999:n1"
+C.save_cards(LIB, {"version": 1, "by_id": {
+    probe_id: {"id": probe_id, "deck": "D", "fields": {"Front": "F", "Back": "B"},
+               "tags": [], "source": {}, "anki_note_id": 424242,
+               "synced_fields": "oldfingerprint"},
+}})
+merged, _ = C.merge_cards(LIB, [{"id": probe_id, "deck": "D",
+                                 "fields": {"Front": "F", "Back": "B"},
+                                 "tags": [], "source": {}}])
+check("merge_cards 保留 anki_note_id",
+      merged["by_id"][probe_id].get("anki_note_id") == 424242,
+      str(merged["by_id"][probe_id].get("anki_note_id")))
+check("merge_cards 保留 synced_fields（否则会反复更新 Anki）",
+      merged["by_id"][probe_id].get("synced_fields") == "oldfingerprint",
+      str(merged["by_id"][probe_id].get("synced_fields")))
+restore_ledger()
+
+_d_now = C.load_cards(LIB)
+_synced = [c for c in _d_now["by_id"].values() if c.get("anki_note_id")]
+check("已同步的卡都记了内容指纹",
+      all(c.get("synced_fields") for c in _synced),
+      f"{sum(1 for c in _synced if not c.get('synced_fields'))} 张缺指纹")
 
 # ---------------------------------------------------------------- 5 导出
 

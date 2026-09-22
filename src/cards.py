@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any
 
-from ledger import atomic_write_text, load_json
+from ledger import atomic_write_text, content_hash, load_json
 
 ANKI_URL = "http://127.0.0.1:8765"
 ANKI_VERSION = 6
@@ -41,8 +42,89 @@ def _esc(s: str) -> str:
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+# ---------------------------------------------------------------- 转写清洗
+#
+# 背景（用户实测发现）：ppt-deepreader 的 transcript 里**散文与公式混在一起**，而且
+# 公式是「半成品记号」—— 它的 prompt 明确要求「向量就写『向量P』，不要用组合附加
+# 符号（浏览器会渲染成方块）」，那是**为它自己的网页显示**做的妥协。实例：
+#
+#   当物体在转动参考系中还有相对运动时，除[惯性离心力外还会]出现科里奥利力。
+#   向量F科 = -2m 向量ω × 向量v′ = 2m 向量v′ × 向量ω
+#   F科 = 2m ω v′ sinθ
+#
+# 这串东西直接印在卡片正面很难看；而同一个批注的 `latex` 字段**是干净的**：
+#   \vec{F}_{\text{科}}=-2m\,\vec{\omega}\times\vec{v}'=2m\,\vec{v}'\times\vec{\omega}
+# 所以：把转写拆成「散文行 / 公式行」，公式行丢掉、改用 latex 渲染。
+
+#: 公式行里常见的符号。
+#: **刻意不含括号** —— `[` `]` `(` `)` 在中文散文里太常见
+#: （deepreader 用 `[...]` 标记不确定处），算进去会把散文误判成公式。
+_MATH_CHARS = set("=×·÷±∓∑∫√∞≈≠≤≥→←↔∂∆∇^_/\\|<>+-−*'′″")
+#: 出现这些词就基本确定是公式行（deepreader 用「向量X」代替 \vec{X}）
+_MATH_WORDS = ("向量", "sin", "cos", "tan", "cot", "log", "ln", "lim", "max", "min")
+#: LaTeX 片段（\\hat / \\vec / \\frac …）—— 出现了必然是公式
+_LATEX_CMD = re.compile(r"\\[a-zA-Z]{2,}")
+
+
+def _is_combining(ch: str) -> bool:
+    """组合附加符号。
+
+    重点：U+20D7（组合右箭头）是「向量箭头」——deepreader 的 prompt 要求尽量别用
+    （浏览器会渲染成方块），但它仍然会漏出来，实测就有「即 P⃗ = m g⃗」这种。
+    不认它，这一行就会被误当成散文。
+    """
+    o = ord(ch)
+    return 0x0300 <= o <= 0x036F or 0x20D0 <= o <= 0x20FF or 0x1AB0 <= o <= 0x1AFF
+
+
+def looks_like_formula(line: str) -> bool:
+    """判断转写里的一行是不是「公式行」而非散文。"""
+    s = (line or "").strip()
+    if not s:
+        return False
+    if any(w in s for w in _MATH_WORDS):
+        return True
+    if _LATEX_CMD.search(s):
+        return True
+    math = sum(1 for ch in s if ch in _MATH_CHARS or _is_combining(ch))
+    if math == 0:
+        return False
+    cjk = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
+    if cjk <= 4:
+        return True
+    # 中文更多时：数学符号足够密（≥3）仍然算公式行
+    # （例如「(x_i,y_i) y_i-\hat y_i（紫色箭头向右）」这种带中文标注的公式）
+    return math >= 3
+
+
+def split_transcript(transcript: str) -> tuple[str, list[str]]:
+    """把转写拆成 ``(散文, [公式行, ...])``。
+
+    散文保留给正面当语境；公式行只用于判断"有没有公式"——
+    真正要显示时用 `latex` 字段（那是规范的 LaTeX）。
+    """
+    prose_lines: list[str] = []
+    formula_lines: list[str] = []
+    for raw in (transcript or "").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        (formula_lines if looks_like_formula(line) else prose_lines).append(line)
+    return "\n".join(prose_lines), formula_lines
+
+
+def latex_blocks(latex: str) -> list[str]:
+    """把 latex 字段拆成一条条独立公式（deepreader 用空行分隔多条）。"""
+    out: list[str] = []
+    for chunk in (latex or "").split("\n\n"):
+        c = chunk.strip()
+        if c:
+            out.append(c)
+    return out
+
+
 def render_front(transcript: str, question: str, latex: str = "") -> str:
-    """正面：语境（原文，或退而用公式）+ 当时的问题。
+    """正面：语境（散文 + 规范公式）+ 当时的问题。
 
     **绝不再伪造通用问题**。第一版在 question 为空时塞了一句
     「❓ 这一块讲的是什么？」，配上模型对模糊图片的描述 →
@@ -55,14 +137,21 @@ def render_front(transcript: str, question: str, latex: str = "") -> str:
             "render_front 收到空问题：没有题目的卡片没有训练意义，"
             "应当在 build_cards 里就被 has_question() 挡掉。"
         )
+    prose, formula_lines = split_transcript(transcript)
+    blocks = latex_blocks(latex)
+
     out: list[str] = []
-    ctx = (transcript or "").strip()
-    if ctx:
-        out.append(f'<div class="ctx">{_esc(ctx).replace(chr(10), "<br>")}</div>')
+    if prose:
+        out.append(f'<div class="ctx">{_esc(prose).replace(chr(10), "<br>")}</div>')
         out.append("<br>")
-    elif (latex or "").strip():
-        # 转录不可用（是画面描述）时的退路：直接给出公式当语境
-        out.append(f'<div class="ctx">\\[{_esc(latex)}\\]</div>')
+    if blocks:
+        # 有规范 LaTeX 就用它；转写里的「向量F科」那种半成品记号不再上卡面
+        for b in blocks:
+            out.append(f"\\[{_esc(b)}\\]")
+        out.append("<br>")
+    elif not prose and formula_lines:
+        # 没有 latex 可用时的退路：至少把公式行原样给出，别让正面空着
+        out.append(f'<div class="ctx">{_esc(chr(10).join(formula_lines)).replace(chr(10), "<br>")}</div>')
         out.append("<br>")
     out.append(f"<b>❓ {_esc(q)}</b>")
     return "\n".join(out)
@@ -150,7 +239,7 @@ def build_cards(course: str, lecture_id: str, source_file: str,
                 "id": card_id(ann.get("_sha1", ""), page, no),
                 "deck": deck,
                 "fields": {
-                    "Front": render_front(context, ann.get("question", "")),
+                    "Front": render_front(context, ann.get("question", ""), latex),
                     "Back": render_back(expl, latex, source),
                 },
                 "tags": ["course-pipeline", course, lecture_id, f"p{page}"],
@@ -194,7 +283,7 @@ def build_cards(course: str, lecture_id: str, source_file: str,
                 "id": card_id(ann.get("_sha1", ""), page, no, i),
                 "deck": deck,
                 "fields": {
-                    "Front": render_front(context, t.get("q", "")),
+                    "Front": render_front(context, t.get("q", ""), latex),
                     "Back": render_back(t.get("a", ""), "", source),
                 },
                 "tags": ["course-pipeline", course, lecture_id, f"p{page}", "追问"],
@@ -221,25 +310,31 @@ def save_cards(library_root: str, data: dict) -> None:
     atomic_write_json(cards_ledger_path(library_root), data)
 
 
+#: 这些字段是「同步状态」，不是卡片内容 —— 重新构建的卡里没有它们，
+#: 合并时必须原样保留。丢掉的话每次都会误判"内容变了"而重复更新 Anki（踩过）。
+_SYNC_STATE_KEYS = ("anki_note_id", "synced_fields")
+
+
 def merge_cards(library_root: str, new_cards: list[dict]) -> tuple[dict, list[str]]:
     """把新卡并入账本。
 
     两条铁律：
-      - **保留已有的 `anki_note_id`**（否则重跑会重复制卡）；
+      - **保留同步状态**（`anki_note_id` / `synced_fields`）——否则重跑会重复制卡、
+        或每次都误判内容变化；
       - **其余字段一律以新构建的为准** —— 早先版本在"字段没变"时保留旧条目，
-        结果新加的元数据（如 source.kind）永远进不去，账本和代码脱节（踩过）。
+        结果新加的元数据（如 source.kind）永远进不去，账本和代码脱节（也踩过）。
     """
     data = load_cards(library_root)
     by_id = data.setdefault("by_id", {})
     report: list[str] = []
     added = updated = 0
     for c in new_cards:
-        old = by_id.get(c["id"])
-        note_id = (old or {}).get("anki_note_id")
+        old = by_id.get(c["id"]) or {}
         merged = dict(c)
-        if note_id:
-            merged["anki_note_id"] = note_id
-        if old is None:
+        for k in _SYNC_STATE_KEYS:
+            if old.get(k) is not None:
+                merged[k] = old[k]
+        if not old:
             added += 1
         elif old != merged:
             updated += 1
@@ -399,9 +494,28 @@ class AnkiConnect:
     def add_notes(self, notes: list[dict]) -> list:
         return self.invoke("addNotes", notes=notes) or []
 
+    def update_note_fields(self, note_id: int, fields: dict[str, str]) -> None:
+        """更新已有 note 的字段。
+
+        为什么必须有：只推新卡远远不够 —— **卡片内容是会随规则改进而变化的**
+        （实测：正面从「向量F科 = -2m 向量ω × …」这种半成品记号，
+         改成用 latex 字段渲染的规范公式）。不做这一步的话，账本更新了、
+        Anki 里却永远停在旧版，用户看到的是过期内容。
+        """
+        self.invoke("updateNoteFields", note={"id": int(note_id), "fields": fields})
+
     def delete_notes(self, note_ids: list[int]) -> None:
         if note_ids:
             self.invoke("deleteNotes", notes=list(note_ids))
+
+
+def fields_fingerprint(card: dict) -> str:
+    """卡片内容指纹：用来判断「Anki 里那张是不是已经过时了」。
+
+    只算正反面文字，**不算 deck/tags** —— 那些改了不值得动 Anki 里的 note；
+    配图名由卡片 id 决定，也不会变。
+    """
+    return content_hash(card.get("fields") or {})
 
 
 def to_anki_note(card: dict, model: str, field_map: dict[str, str],
@@ -444,35 +558,64 @@ def sync_to_anki(library_root: str, cards: list[dict], model: str | None = None,
     data = load_cards(library_root)
     by_id = data["by_id"]
 
-    pending = [c for c in cards if not by_id.get(c["id"], {}).get("anki_note_id")]
-    if not pending:
-        report.append("[anki ] 没有新卡要推送（都已同步过）")
+    # 分三堆：新卡（推）、内容变了的旧卡（更新）、没变的（跳过）
+    to_add: list[dict] = []
+    to_update: list[dict] = []
+    for c in cards:
+        rec = by_id.get(c["id"], {})
+        nid = rec.get("anki_note_id")
+        if not nid:
+            to_add.append(c)
+        elif rec.get("synced_fields") != fields_fingerprint(c):
+            # 账本里内容变了，但 Anki 里还是旧的 —— 必须更新过去
+            to_update.append(c)
+
+    if not to_add and not to_update:
+        report.append("[anki ] 没有新卡、也没有内容变化（都已同步过）")
         return report
 
-    for deck in sorted({c["deck"] for c in pending}):
+    for deck in sorted({c["deck"] for c in to_add + to_update}):
         ac.ensure_deck(deck)
 
-    notes = []
-    for c in pending:
-        media = None
-        if with_images and c.get("crop"):
-            fname = f"cp_{c['id'].replace(':', '_')}.jpg"
-            if ac.store_media(fname, c["crop"]):
-                media = fname
-        notes.append(to_anki_note(c, use_model, field_map, media))
-
-    try:
-        ids = ac.add_notes(notes)
-    except AnkiError as e:
-        return report + [f"[error] 推送失败：{e}"]
-
+    # ---- 新建 ----
     ok = fail = 0
-    for c, nid in zip(pending, ids):
-        if nid:
-            by_id[c["id"]]["anki_note_id"] = nid
-            ok += 1
-        else:
-            fail += 1
+    if to_add:
+        notes = []
+        for c in to_add:
+            media = None
+            if with_images and c.get("crop"):
+                fname = f"cp_{c['id'].replace(':', '_')}.jpg"
+                if ac.store_media(fname, c["crop"]):
+                    media = fname
+            notes.append(to_anki_note(c, use_model, field_map, media))
+        try:
+            ids = ac.add_notes(notes)
+        except AnkiError as e:
+            return report + [f"[error] 推送失败：{e}"]
+        for c, nid in zip(to_add, ids):
+            if nid:
+                by_id[c["id"]]["anki_note_id"] = nid
+                by_id[c["id"]]["synced_fields"] = fields_fingerprint(c)
+                ok += 1
+            else:
+                fail += 1
+
+    # ---- 更新内容变了的旧卡 ----
+    upd = upd_fail = 0
+    for c in to_update:
+        nid = by_id[c["id"]]["anki_note_id"]
+        fields = to_anki_note(c, use_model, field_map)["fields"]
+        try:
+            ac.update_note_fields(nid, fields)
+            by_id[c["id"]]["synced_fields"] = fields_fingerprint(c)
+            upd += 1
+        except AnkiError:
+            upd_fail += 1
+
     save_cards(library_root, data)
-    report.append(f"[anki ] 成功推送 {ok} 张" + (f"，失败 {fail} 张" if fail else ""))
+    if to_add:
+        report.append(f"[anki ] 新建 {ok} 张" + (f"，失败 {fail} 张" if fail else ""))
+    if to_update:
+        report.append(f"[anki ] 更新 {upd} 张内容变化过的旧卡"
+                      + (f"，失败 {upd_fail} 张" if upd_fail else ""))
     return report
