@@ -69,9 +69,10 @@ def cmd_ingest(course: str, force: bool = False, images: bool = True,
 
     for pdf in pdfs:
         stem = os.path.splitext(os.path.basename(pdf))[0]
+        slug = pdf_source.slugify(stem)
         digest = sha256_file(pdf)
         rec = sources["sources"].get(stem)
-        assets_dir = os.path.join(root, "assets", stem)
+        assets_dir = os.path.join(root, "assets", slug)
 
         unchanged = (rec is not None and rec.get("sha256") == digest
                      and led.load_pages(stem) is not None)
@@ -84,12 +85,14 @@ def cmd_ingest(course: str, force: bool = False, images: bool = True,
         data = pdf_source.ingest(pdf, images_dir=assets_dir, scale=scale,
                                  render_images=images)
         data["id"] = stem
+        data["slug"] = slug
         data["file"] = os.path.basename(pdf)
         data["sha256"] = digest
         led.save_pages(stem, data)
 
         sources["sources"][stem] = {
             "file": os.path.basename(pdf),
+            "slug": slug,
             "sha256": digest,
             "page_count": data["page_count"],
             "boilerplate": data["boilerplate"],
@@ -157,13 +160,37 @@ def cmd_check(course: str) -> list[str]:
         rec = sources["sources"][stem]
         data = led.load_pages(stem)
         note = os.path.join(root, "notes", f"{stem}.md")
-        imgs = os.path.join(root, "assets", stem)
+        slug = rec.get("slug", pdf_source.slugify(stem))
+        imgs = os.path.join(root, "assets", slug)
         n_img = len([f for f in os.listdir(imgs) if f.endswith(".png")]) if os.path.isdir(imgs) else 0
         ok_pages = "OK " if data else "MISS"
         ok_note = "OK " if os.path.exists(note) else "MISS"
         ok_img = "OK " if n_img >= rec["page_count"] else "MISS"
         out.append(f"  {stem:16s} pages={ok_pages} note={ok_note} "
                    f"images={ok_img}({n_img}/{rec['page_count']})")
+    return out
+
+
+# ---------------------------------------------------------------- clean
+
+def cmd_clean(course: str) -> list[str]:
+    """删掉 assets/ 与 notes/。
+
+    这两个目录按铁律 1 是「可删可重建」的：内容全部来自账本。
+    图片目录名规则变过（空格 → 连字符）时会留下孤儿目录，用这个清掉。
+    **绝不碰 source/ 与 .ledger/**。
+    """
+    import shutil
+    root = course_root(course)
+    out: list[str] = []
+    for sub in ("assets", "notes"):
+        p = os.path.join(root, sub)
+        if os.path.isdir(p):
+            n = sum(len(f) for _d, _s, f in os.walk(p))
+            shutil.rmtree(p)
+            out.append(f"[clean] 删除 {sub}/（{n} 个文件），重跑可无损重建")
+        else:
+            out.append(f"[clean] {sub}/ 不存在，跳过")
     return out
 
 
@@ -176,10 +203,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scale", type=float, default=1.6, help="页图缩放（默认 1.6）")
     ap.add_argument("--force", action="store_true", help="忽略缓存，强制重算")
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
-    ap.add_argument("action", choices=["ingest", "render", "all", "check"])
+    ap.add_argument("action", choices=["ingest", "render", "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
+    if args.action == "clean":
+        lines += cmd_clean(args.course)
     if args.action in ("ingest", "all"):
         lines += cmd_ingest(args.course, force=args.force,
                             images=not args.no_images, scale=args.scale)

@@ -42,6 +42,22 @@ _SENTENCE_PUNCT = re.compile(r"[，。；：！？,;:!?]")
 
 _CJK = re.compile(r"[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]")
 
+#: 路径里不能出现的字符：文件系统禁用字符 + markdown 链接定界符。
+#: 尤其是**空格** —— `![x](../assets/01 GC01/p.png)` 在 CommonMark 里是非法链接，
+#: VS Code 预览、GitHub 都显示不出图（只有 Obsidian 宽容才没暴露）。这个坑踩过。
+_UNSAFE_PATH = re.compile(r'[\\/:*?"<>|#%\[\]()\s]+')
+
+
+def slugify(name: str) -> str:
+    """把讲义名变成安全的目录名：去禁用字符、空白换连字符、压缩连字符。
+
+    `01 GC01` → `01-GC01`，于是 `../assets/01-GC01/p001.png` 在所有
+    markdown 阅读器里都是合法链接。
+    """
+    s = _UNSAFE_PATH.sub("-", name.strip())
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s or "item"
+
 
 # ---------------------------------------------------------------- 抽取
 

@@ -32,6 +32,9 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True)
     """渲染一篇讲义笔记的「生成块」内容。"""
     out: list[str] = []
     head = lecture.get("running_head") or ""
+    # 图片目录用 slug（无空格/无禁用字符），否则 `![x](../assets/01 GC01/p.png)`
+    # 在 CommonMark 里是非法链接，VS Code 预览与 GitHub 都显示不出图。
+    slug = lecture.get("slug") or lecture["id"]
     out.append(f"> 来源：`{lecture['file']}` ｜ 共 {lecture['page_count']} 页"
                + (f" ｜ 页眉：{head}" if head else ""))
     if lecture.get("boilerplate"):
@@ -46,7 +49,7 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True)
         out.append(f"### 第 {p['no']} 页")
         out.append("")
         if p.get("image") and include_images:
-            out.append(f"![第 {p['no']} 页](../assets/{lecture['id']}/{p['image']})")
+            out.append(f"![第 {p['no']} 页](../assets/{slug}/{p['image']})")
             out.append("")
         if not p.get("has_text_layer", True):
             out.append("*（本页没有文字层 —— 内容全在图上）*")

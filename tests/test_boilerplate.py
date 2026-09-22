@@ -127,6 +127,17 @@ if os.path.isdir(LIB):
                          if not l.startswith("> 来源：") and not l.startswith("> 已自动剔除"))
         hits = re.findall(r"普通化学\s*\d+", body)
         check(f"{fn} 正文里没有页脚残留", not hits, f"残留 {len(hits)} 处 {hits[:3]}")
+
+        # 图片链接必须合法（不含空格）+ 目标文件真的存在。
+        # `![x](../assets/01 GC01/p.png)` 这种带空格的链接在 CommonMark 里是非法链接，
+        # VS Code 预览与 GitHub 都显示不出图 —— 这个坑已经踩过一次。
+        links = re.findall(r"!\[[^\]]*\]\(([^)]*)\)", text)
+        bad = [u for u in links if re.search(r"\s", u)]
+        check(f"{fn} 图片链接不含空格（合法 CommonMark）", not bad, str(bad[:2]))
+        missing = [u for u in links if not os.path.exists(
+            os.path.normpath(os.path.join(LIB, u)))]
+        check(f"{fn} 图片链接指向的文件都存在", not missing,
+              f"{len(missing)} 个缺失，例如 {missing[:2]}")
 else:
     PASSES.append("（跳过真实产物回归：还没生成笔记）")
 
