@@ -1,0 +1,182 @@
+# -*- coding: utf-8 -*-
+"""Anki 卡片测试（离线可跑，不要求 Anki 正在运行）。
+
+每条断言对应一个真实约束：
+  1. 卡片身份必须**只由源数据决定** —— 否则重跑会重复制卡
+  2. 重跑不能重复推送（靠账本里的 anki_note_id）
+  3. 正面必须有语境（原文），否则「这个公式怎么推的」这类问题无法作答
+  4. 背面必须有出处（哪一讲第几页）
+  5. 字段名映射要认中英两种（中文版 Anki 是「正面/背面」，没有 Basic 这个类型名）
+  6. TSV 导出格式要能让 Anki 直接导入
+
+跑法：python tests/test_cards.py
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJ = os.path.dirname(HERE)
+COURSE = "物理"
+LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", COURSE))
+
+sys.path.insert(0, os.path.join(PROJ, "vendor"))
+sys.path.insert(0, os.path.join(PROJ, "src"))
+import archive  # noqa: E402
+import cards as C  # noqa: E402
+
+FAILS: list[str] = []
+PASSES: list[str] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    (PASSES if ok else FAILS).append(f"{name}{(' — ' + detail) if detail else ''}")
+
+
+def run(*args: str) -> str:
+    r = subprocess.run([sys.executable, os.path.join(PROJ, "run.py"), *args],
+                       capture_output=True, text=True, encoding="utf-8", cwd=PROJ)
+    return (r.stdout or "") + (r.stderr or "")
+
+
+# ---------------------------------------------------------------- 1 身份
+
+check("卡片身份只由源数据决定（同输入同 id）",
+      C.card_id("abcdef1234567890", 10, 1) == C.card_id("abcdef1234567890", 10, 1))
+check("不同页 → 不同 id", C.card_id("a" * 20, 10, 1) != C.card_id("a" * 20, 11, 1))
+check("不同序号 → 不同 id", C.card_id("a" * 20, 10, 1) != C.card_id("a" * 20, 10, 2))
+check("追问另有 id", C.card_id("a" * 20, 10, 1, 1) != C.card_id("a" * 20, 10, 1))
+check("id 里带页号，便于人眼核对", ":p010:" in C.card_id("a" * 20, 10, 1))
+
+# ---------------------------------------------------------------- 2 内容
+
+front = C.render_front("接触力③：张力", "怎么定义收缩的方向？")
+check("正面含原文（语境）", "接触力③" in front)
+check("正面含问题", "怎么定义收缩的方向" in front)
+
+back = C.render_back("这是解答", "E=mc^2", {"lecture": "第五讲", "page": 10, "bbox": "[0,0,1,1]"})
+check("背面含解答", "这是解答" in back)
+check("背面公式用 Anki 的 \\[...\\] 语法", "\\[E=mc^2\\]" in back)
+check("背面带出处：讲次", "第五讲" in back)
+check("背面带出处：页号", "第 10 页" in back)
+check("背面带出处：框选区域", "框选" in back)
+
+check("HTML 特殊字符被转义（防注入/破版）",
+      "&lt;script&gt;" in C.render_front("<script>alert(1)</script>", "q"))
+
+# ---------------------------------------------------------------- 3 从真数据构建
+
+arch = archive.load_archive(LIB)
+if not arch.get("by_sha1"):
+    print(f"跳过：{LIB} 账本里没有批注，先跑 archive")
+    raise SystemExit(0)
+
+built: list[dict] = []
+for sha, rec in arch["by_sha1"].items():
+    if not rec.get("lecture_id"):
+        continue
+    anns = []
+    for a in rec["annotations"]:
+        b = dict(a)
+        b["_sha1"] = sha
+        anns.append(b)
+    built += C.build_cards(COURSE, rec["lecture_id"], rec.get("source_file", ""),
+                           anns, "slug", None)
+
+check("从真实批注构建出卡片", len(built) >= 8, f"{len(built)} 张")
+check("每张卡都有稳定 id", all(c.get("id") for c in built))
+check("每张卡都有正反面", all(c["fields"]["Front"] and c["fields"]["Back"] for c in built))
+check("每张卡带出处（讲次+页号）",
+      all(c["source"].get("lecture") and c["source"].get("page") for c in built))
+check("追问单独成卡（第 12 页那条）",
+      any(":t1" in c["id"] for c in built),
+      str([c["id"] for c in built if ":t" in c["id"]]))
+
+ids = [c["id"] for c in built]
+check("卡片 id 无重复", len(ids) == len(set(ids)), f"{len(ids)} vs {len(set(ids))}")
+
+# ---------------------------------------------------------------- 4 落账本 + 幂等
+
+run("--course", COURSE, "cards")
+data1 = C.load_cards(LIB)
+check("卡片已落账本 .ledger/cards.json", len(data1["by_id"]) >= 8, f"{len(data1['by_id'])} 张")
+check("账本是落盘的 JSON", os.path.exists(C.cards_ledger_path(LIB)))
+
+# 模拟"已经推过 Anki"：手工写一个 note id，重跑必须保住它
+first_id = sorted(data1["by_id"])[0]
+data1["by_id"][first_id]["anki_note_id"] = 999999999
+C.save_cards(LIB, data1)
+
+run("--course", COURSE, "cards")
+data2 = C.load_cards(LIB)
+check("重跑后已推送标记 **不被清掉**（否则会重复制卡）",
+      data2["by_id"][first_id].get("anki_note_id") == 999999999,
+      str(data2["by_id"][first_id].get("anki_note_id")))
+check("重跑后卡片总数不变", len(data2["by_id"]) == len(data1["by_id"]),
+      f"{len(data2['by_id'])} vs {len(data1['by_id'])}")
+
+# 还原
+data2["by_id"][first_id].pop("anki_note_id", None)
+C.save_cards(LIB, data2)
+
+# ---------------------------------------------------------------- 5 导出
+
+tsv = os.path.join(LIB, "cards", "anki_import.tsv")
+check("导出了 Anki 可导入的 TSV", os.path.exists(tsv))
+with open(tsv, encoding="utf-8") as f:
+    rows = [l.rstrip("\n") for l in f if l.strip()]
+header = [l for l in rows if l.startswith("#")]
+data_rows = [l for l in rows if not l.startswith("#")]
+check("TSV 首行是 Anki 认可的分隔符声明",
+      rows[0] == "#separator:tab", rows[0] if rows else "(空)")
+check("TSV 数据行数与卡片数一致", len(data_rows) == len(data2["by_id"]),
+      f"{len(data_rows)} vs {len(data2['by_id'])}")
+check("TSV 表头声明了笔记类型", any(l.startswith("#notetype:") for l in header),
+      str(header))
+# 表头里的笔记类型必须与 Anki 里真实存在的类型一致（中文版没有 Basic）
+nt = next((l.split(":", 1)[1] for l in header if l.startswith("#notetype:")), "")
+ac0 = C.AnkiConnect()
+if ac0.available():
+    real = ac0.model_names()
+    check("TSV 声明的笔记类型在 Anki 里真实存在", nt in real, f"{nt} vs {real}")
+else:
+    PASSES.append("（跳过笔记类型核对：AnkiConnect 未运行）")
+
+# ---------------------------------------------------------------- 6 字段映射（中英）
+
+note_cn = C.to_anki_note({"deck": "D", "fields": {"Front": "F", "Back": "B"},
+                          "tags": ["t"]}, "问答题", {"Front": "正面", "Back": "背面"})
+check("中文版字段名映射正确", note_cn["fields"] == {"正面": "F", "背面": "B"},
+      str(note_cn["fields"]))
+note_en = C.to_anki_note({"deck": "D", "fields": {"Front": "F", "Back": "B"},
+                          "tags": ["t"]}, "Basic", {"Front": "Front", "Back": "Back"})
+check("英文版字段名映射正确", note_en["fields"] == {"Front": "F", "Back": "B"})
+check("note 结构符合 AnkiConnect 要求",
+      {"deckName", "modelName", "fields", "tags", "options"} <= set(note_cn))
+check("配图会拼到背面", "<img" in C.to_anki_note(
+    {"deck": "D", "fields": {"Front": "F", "Back": "B"}, "tags": []},
+    "问答题", {"Front": "正面", "Back": "背面"}, "x.jpg")["fields"]["背面"])
+
+# ---------------------------------------------------------------- 7 AnkiConnect（可选）
+
+ac = C.AnkiConnect()
+if ac.available():
+    model, fmap = ac.pick_basic_model()
+    check("能挑到有正反两面的笔记类型（中文版没有 Basic 这个名字）",
+          bool(model) and set(fmap) == {"Front", "Back"}, f"{model} {fmap}")
+    ids_in_anki = ac.invoke("findNotes", query=f'"deck:课程::{COURSE}"')
+    check("Anki 里确有本课程的卡片", len(ids_in_anki) >= 8, f"{len(ids_in_anki)} 张")
+else:
+    PASSES.append("（跳过 Anki 实时检查：AnkiConnect 未运行）")
+
+# ---------------------------------------------------------------- 汇总
+
+for p in PASSES:
+    print("PASS  " + p)
+for f_ in FAILS:
+    print("FAIL  " + f_)
+print("=" * 60)
+print(f"通过 {len(PASSES)} / 失败 {len(FAILS)}")
+raise SystemExit(1 if FAILS else 0)

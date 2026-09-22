@@ -30,6 +30,7 @@ except Exception:
 
 from ledger import Ledger, atomic_write_text, sha256_file  # noqa: E402
 import archive  # noqa: E402
+import cards as cards_mod  # noqa: E402
 import pdf_source  # noqa: E402
 import render  # noqa: E402
 
@@ -187,6 +188,67 @@ def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
     return report
 
 
+# ---------------------------------------------------------------- cards
+
+def cmd_cards(course: str, sync: bool = False) -> list[str]:
+    """把归档的追问变成 Anki 卡片。
+
+    - 卡片身份稳定（源自 sha1+页号+序号），所以重跑不会重复制卡；
+    - `anki_note_id` 存在账本里，已推过的不会再推；
+    - 不加 --sync 时只生成 + 导出 TSV，不碰 Anki。
+    """
+    root = course_root(course)
+    led = ledger_of(course)
+    sources = led.load_sources()
+    arch = archive.load_archive(root)
+
+    all_cards: list[dict] = []
+    for sha, rec in sorted(arch.get("by_sha1", {}).items()):
+        lec = rec.get("lecture_id")
+        if not lec:
+            continue
+        slug = (sources["sources"].get(lec, {}).get("slug")
+                or pdf_source.slugify(lec))
+        crop_dir = os.path.join(root, "assets", slug, "ann")
+        anns = []
+        for a in rec["annotations"]:
+            b = dict(a)
+            b["_sha1"] = sha
+            anns.append(b)
+        all_cards += cards_mod.build_cards(course, lec, rec.get("source_file", ""),
+                                           anns, slug, crop_dir)
+
+    if not all_cards:
+        return ["[warn] 没有可制卡的追问 —— 先跑 archive（需账本里有匹配到讲次的批注）"]
+
+    data, report = cards_mod.merge_cards(root, all_cards)
+    cards_mod.save_cards(root, data)
+
+    # 探测目标 Anki 的笔记类型：中文版没有 Basic 这个名字（叫「问答题」），
+    # 表头写错会导致导入失败或建出错误的类型。探测不到才退回 Basic。
+    notetype = "Basic"
+    ac = cards_mod.AnkiConnect()
+    if ac.available():
+        picked, _fmap = ac.pick_basic_model()
+        if picked:
+            notetype = picked
+            report.append(f"[anki ] 探测到笔记类型：**{notetype}**")
+
+    out_dir = os.path.join(root, "cards")
+    os.makedirs(out_dir, exist_ok=True)
+    tsv = os.path.join(out_dir, "anki_import.tsv")
+    cards_mod.export_tsv(sorted(data["by_id"].values(), key=lambda c: c["id"]),
+                         tsv, notetype=notetype, deck=f"课程::{course}")
+    report.append(f"[export] 已导出到 {os.path.relpath(tsv, root)}"
+                  f"（笔记类型 {notetype}，可直接用 Anki 导入）")
+
+    if sync:
+        report += cards_mod.sync_to_anki(root, all_cards)
+    else:
+        report.append("[tip  ] 想直接推进 Anki：加 --sync（需 Anki 已打开）")
+    return report
+
+
 # ---------------------------------------------------------------- check
 
 def cmd_check(course: str) -> list[str]:
@@ -245,7 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", default=None, help="把报告写到这个 UTF-8 文件")
     ap.add_argument("--ann-root", action="append", default=None,
                     help="批注数据源目录（可多次；默认扫 D:\\1\\ppt-deepreader\\.pdw_work）")
-    ap.add_argument("action", choices=["ingest", "render", "archive", "all", "check", "clean"])
+    ap.add_argument("--sync", action="store_true",
+                    help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
+    ap.add_argument("action",
+                    choices=["ingest", "render", "archive", "cards", "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
@@ -256,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
                             images=not args.no_images, scale=args.scale)
     if args.action in ("archive", "all"):
         lines += cmd_archive(args.course, args.ann_root)
+    if args.action in ("cards", "all"):
+        lines += cmd_cards(args.course, sync=args.sync)
     if args.action in ("render", "all"):
         lines += cmd_render(args.course, images=not args.no_images)
     if args.action == "check":
