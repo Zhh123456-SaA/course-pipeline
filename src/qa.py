@@ -104,6 +104,88 @@ def check_question(q: str) -> tuple[bool, str]:
     return True, ""
 
 
+#: 改这个会让「知识点自测问题」的缓存失效
+KC_QA_PROMPT_VERSION = 1
+
+KC_QA_SYSTEM = """你在为一份课程讲义的知识点出**自测问题**。
+
+我要的不是复述，是**能暴露"其实没懂"的问题**。
+
+对每个知识点出 1~3 个问题，要求：
+1. 问题必须**仅凭该知识点的要点**就能回答（要点就是答案的来源）。
+2. **覆盖不同层次**，按知识点挑最值得问的：
+   - 为什么成立？（原理类优先问这个）
+   - 怎么用 / 什么步骤？（方法类优先问这个）
+   - 在什么条件下成立、什么时候会失效？（很多知识点最该问的是边界）
+   - 和别的概念怎么区分？（容易混淆的才问）
+3. **不要**问「X 是什么」这种只要背定义的 —— 除非定义本身就是考点。
+4. **不要**空泛问法（「这一块讲了什么」）。
+5. 每个问题不超过 40 字，一行，以问号结尾。
+6. importance 为 must 的知识点出 2~3 个，其余 1~2 个。
+
+只输出 JSON，不要解释、不要 markdown 围栏：
+{"questions": [{"id": "L05.1", "qs": ["……？", "……？"]}]}"""
+
+
+def generate_kc_questions(library_root: str, outline: dict,
+                          kcs: list[dict]) -> tuple[dict[str, list[str]], dict]:
+    """为**一整讲**的知识点批量出题。返回 ({kc_id: [问题]}, meta)。
+
+    为什么批量而不是逐个：一次能看到全部知识点，风格一致、不会重复问同一件事，
+    也更便宜（一次调用 vs 几十次）。
+    """
+    if not kcs:
+        return {}, {}
+    keys = [f"{k['id']} | {k['label']} | {k['type']}/{k['importance']} | "
+            + "；".join(k.get("points") or [])[:120] for k in kcs]
+    parts = "、".join(p["label"] for p in (outline.get("parts") or []))
+    objs = "；".join(outline.get("objectives") or [])
+    user = (f"【本讲】{outline.get('title') or ''}\n"
+            f"【结构】{parts or '（无）'}\n"
+            f"【课件写明的学习目标】{objs or '（无）'}\n\n"
+            f"【知识点】（id | 名称 | 类型/重要度 | 要点）\n" + "\n".join(keys)
+            + "\n\n请输出 JSON。")
+
+    obj, meta = engine.chat_json(KC_QA_SYSTEM, user, max_tokens=12000)
+    rows = obj.get("questions") if isinstance(obj, dict) else None
+    valid_ids = {k["id"] for k in kcs}
+    out: dict[str, list[str]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        kid = str(row.get("id") or "").strip()
+        if kid not in valid_ids:
+            continue
+        qs: list[str] = []
+        for q in row.get("qs") or []:
+            q = str(q).strip()
+            ok, _why = check_question(q)
+            if ok and q not in qs:
+                qs.append(q)
+        if qs:
+            out[kid] = qs[:3]
+    return out, meta
+
+
+def kc_questions_cache_path(library_root: str) -> str:
+    return os.path.join(library_root, ".ledger", "kc_qa_cache.json")
+
+
+def load_kc_qa_cache(library_root: str) -> dict:
+    return load_json(kc_questions_cache_path(library_root), None) or {"version": 1, "by_key": {}}
+
+
+def save_kc_qa_cache(library_root: str, d: dict) -> None:
+    d["version"] = 1
+    atomic_write_json(kc_questions_cache_path(library_root), d)
+
+
+def kc_qa_key(outline: dict, kcs: list[dict], model: str) -> str:
+    return content_hash({"v": KC_QA_PROMPT_VERSION, "model": model,
+                         "outline": outline.get("title", ""),
+                         "kcs": [(k["id"], k["label"], k.get("points")) for k in kcs]})
+
+
 # ---------------------------------------------------------------- 缓存
 
 def cache_path(library_root: str) -> str:

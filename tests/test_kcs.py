@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -309,6 +311,82 @@ else:
             ov = f.read()
         check("总览里有表格", "| id | 知识点 |" in ov)
         check("总览标注了「你问过」", "你问过" in ov)
+
+# ---------------------------------------------------------------- 6b 知识点图谱
+# 用户要求「建立知识点图谱」—— Obsidian 的图谱只认 [[双链]]，
+# 所以知识点必须成为独立笔记、互相链接。文件名不能有 Windows 禁用字符。
+
+import render as R  # noqa: E402
+
+check("笔记名用 id + 清洗后的 label",
+      R.kc_note_name({"id": "L05.9", "label": "绳与棒中弹性力方向的判别"})
+      == "L05.9 绳与棒中弹性力方向的判别")
+check("文件名里的禁用字符被替掉",
+      "/" not in R.kc_note_name({"id": "L05.1", "label": "a/b:c*d?e"})
+      and ":" not in R.kc_note_name({"id": "L05.1", "label": "a/b:c*d?e"}),
+      R.kc_note_name({"id": "L05.1", "label": "a/b:c*d?e"}))
+check("双链格式正确", R.kc_link({"id": "L05.2", "label": "x"}) == "[[L05.2 x]]")
+
+# 原子笔记：生成块 + 你的理解区；重跑要保住你写的字
+import tempfile as _tf  # noqa: E402
+_tmpd = os.path.join(PROJ, ".pdw_test_kcnotes")
+os.makedirs(_tmpd, exist_ok=True)
+_p = os.path.join(_tmpd, "L09.1 测试.md")
+_body = R.render_kc_note({"id": "L09.1", "label": "测试", "type": "concept",
+                          "importance": "must", "points": ["要点一"],
+                          "self_test": ["问题一？"], "deps": [], "questions": [],
+                          "pages": [3]},
+                         "L09", "L09", {}, {}, [])
+_first = R.write_kc_note(_p, "测试", _body)
+check("原子笔记含生成块", "<!-- gen:begin -->" in _first and "问题一？" in _first)
+check("原子笔记含「我的理解」区", "## 我的理解" in _first)
+check("标题只出现一次（曾因两处都加而重复）", _first.count("# 测试") == 1,
+      str(_first.count("# 测试")))
+# 写点自己的东西再重跑
+with open(_p, "a", encoding="utf-8") as f:
+    f.write("\n我自己的理解，不许被冲掉。\n")
+R.write_kc_note(_p, "测试", _body)
+_second = open(_p, encoding="utf-8").read()
+check("重跑后我写的内容仍在", "不许被冲掉" in _second)
+check("重跑后生成块仍在", "问题一？" in _second)
+shutil.rmtree(_tmpd, ignore_errors=True)
+
+# ---------------------------------------------------------------- 6c 真实产物：图谱与问题
+if chapters:
+    kc_dir = os.path.join(LIB, "notes", "知识点")
+    kc_files = [f for f in os.listdir(kc_dir)] if os.path.isdir(kc_dir) else []
+    check("生成了知识点原子笔记", len(kc_files) >= 10, f"{len(kc_files)} 篇")
+
+    # ★ 最关键的一条：**每一处 [[双链]] 都必须指向真实存在的笔记**。
+    #   实测踩过：回到讲次的链接用了导览标题，而讲次笔记的文件名是讲次 id，链是断的。
+    existing = {os.path.splitext(f)[0] for f in os.listdir(os.path.join(LIB, "notes"))
+                if f.endswith(".md")}
+    existing |= {os.path.splitext(f)[0] for f in kc_files}
+    broken: list[str] = []
+    for d in (os.path.join(LIB, "notes"), kc_dir):
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if not f.endswith(".md"):
+                continue
+            text = open(os.path.join(d, f), encoding="utf-8").read()
+            # 先剥掉行内代码：指南里用 `[[双链]]` 讲概念，那不是真链接（踩过假阳性）
+            text = re.sub(r"`[^`]*`", "", text)
+            for m in re.findall(r"\[\[([^\]|#]+)", text):
+                if m.strip() not in existing:
+                    broken.append(f"{f} -> [[{m}]]")
+    check("所有 [[双链]] 都能解析（图谱里不会出现断链）", not broken,
+          str(broken[:3]))
+
+    qpath = os.path.join(LIB, "notes", "_问题清单.md")
+    check("生成了自测问题清单", os.path.exists(qpath))
+    if os.path.exists(qpath):
+        qtext = open(qpath, encoding="utf-8").read()
+        n_q = qtext.count("\n    - ") + qtext.count("— ")
+        check("问题清单里有题", n_q >= 10, f"{n_q} 道")
+        check("问题以问号结尾", "？" in qtext)
+        check("问题按部分分组", "📂" in qtext)
+    check("生成了使用指南", os.path.exists(os.path.join(LIB, "notes", "_怎么用这个库.md")))
 
 # ---------------------------------------------------------------- 7 引擎可复用
 

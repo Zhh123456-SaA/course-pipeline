@@ -179,6 +179,53 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         )
         total = sum(len(c.get("kcs") or []) for c in chapters)
         report.append(f"[note] _知识点总览.md  {total} 个知识点")
+
+        # 自测问题清单：陈述句读完会觉得懂了，问句才会暴露没懂
+        n_q = sum(len(k.get("self_test") or []) for c in chapters for k in (c.get("kcs") or []))
+        if n_q:
+            render.write_note(
+                os.path.join(notes_dir, "_问题清单.md"),
+                f"{course} · 自测问题",
+                render.render_questions_page(course, chapters),
+            )
+            report.append(f"[note] _问题清单.md  {n_q} 道自测题")
+
+        # ---- 知识点原子笔记（Obsidian 图谱靠它们长出来）----
+        kc_dir = os.path.join(notes_dir, "知识点")
+        os.makedirs(kc_dir, exist_ok=True)
+        wanted: set[str] = set()
+        n_notes = 0
+        for c in chapters:
+            lec_label = (c.get("outline") or {}).get("title") or c.get("label") or c["id"]
+            kcs = c.get("kcs") or []
+            by_id = {k["id"]: k for k in kcs}
+            # 反向链接：谁依赖我
+            back: dict[str, list[dict]] = {}
+            for k in kcs:
+                for d in k.get("deps") or []:
+                    back.setdefault(d, []).append(k)
+            for k in kcs:
+                name = render.kc_note_name(k) + ".md"
+                wanted.add(name)
+                body = render.render_kc_note(k, lec_label, c["id"],
+                                             c.get("outline") or {},
+                                             by_id, back.get(k["id"], []))
+                # 知识点笔记是原子笔记：正文由程序全量生成，手写区在文件末尾
+                render.write_kc_note(os.path.join(kc_dir, name), k.get("label", ""), body)
+                n_notes += 1
+        # 清掉本次没生成的（知识点被合并/改名留下的孤儿）—— 这个目录由程序独占，删是安全的
+        orphans = [f for f in os.listdir(kc_dir)
+                   if f.endswith(".md") and f not in wanted]
+        for f in orphans:
+            os.remove(os.path.join(kc_dir, f))
+        report.append(f"[note] 知识点/*.md  {n_notes} 篇原子笔记"
+                      + (f"，清掉 {len(orphans)} 个孤儿" if orphans else ""))
+
+    # 使用指南（不参与自动生成，只在你没改过时写入）
+    guide_path = os.path.join(notes_dir, "_怎么用这个库.md")
+    if not os.path.exists(guide_path):
+        atomic_write_text(guide_path, render.render_guide())
+        report.append("[note] _怎么用这个库.md  已生成使用指南")
     return report
 
 
@@ -380,6 +427,30 @@ def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
         n = kcs_mod.link_questions(found, anns)
         if n:
             report.append(f"[link ] {stem}：{n} 条追问挂到了知识点上")
+
+        # 把知识点抽象成「自测问题」—— 陈述句读完会觉得懂了，问句才会暴露没懂
+        if found and outline:
+            key = qa.kc_qa_key(outline, found, engine.model_name())
+            qcache = qa.load_kc_qa_cache(root)
+            if key in qcache.get("by_key", {}):
+                qmap = qcache["by_key"][key]["questions"]
+                report.append(f"[ask  ] {stem}：自测问题命中缓存")
+            else:
+                try:
+                    qmap, qmeta = qa.generate_kc_questions(root, outline, found)
+                    qcache.setdefault("by_key", {})[key] = {"questions": qmap, "meta": qmeta}
+                    report.append(f"[ask  ] {stem}：{len(qmap)} 个知识点出了 "
+                                  f"{sum(len(v) for v in qmap.values())} 道自测题"
+                                  f"（{qmeta.get('tokens', 0)} token）")
+                except Exception as e:  # noqa: BLE001
+                    report.append(f"[warn ] {stem} 自测问题生成失败：{e}")
+                    qmap = {}
+                qa.save_kc_qa_cache(root, qcache)
+            for k in found:
+                qs = qmap.get(k["id"]) or []
+                if qs:
+                    k["self_test"] = qs
+
         order = [k["id"] for k in sorted(found, key=lambda x: (x.get("page") or 0, x["id"]))]
         kcs_mod.put_lecture(data, stem, label, found, outline=outline, order=order)
 
