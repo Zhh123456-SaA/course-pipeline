@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,8 +42,19 @@ import render  # noqa: E402
 LIBRARY_ROOT = os.path.abspath(os.path.join(HERE, "..", "学习库"))
 
 
+def library_root() -> str:
+    """知识库根目录。可用环境变量 COURSE_LIB 覆盖。
+
+    ★ 为什么要能覆盖：自测必须能在**一次性的沙箱库**里跑，
+    绝不允许把真实课程当测试床（真实事故：s1_idempotent 直接对着
+    用户真实的 学习库\\普通化学 跑，还 rmtree 掉它的 notes/ 与 assets/）。
+    另外这也方便把库放到别处（比如同步盘）。
+    """
+    return os.path.abspath(os.environ.get("COURSE_LIB") or LIBRARY_ROOT)
+
+
 def course_root(course: str) -> str:
-    return os.path.join(LIBRARY_ROOT, course)
+    return os.path.join(library_root(), course)
 
 
 def ledger_of(course: str) -> Ledger:
@@ -485,7 +497,11 @@ def cmd_check(course: str) -> list[str]:
         note = os.path.join(root, "notes", f"{stem}.md")
         slug = rec.get("slug", pdf_source.slugify(stem))
         imgs = os.path.join(root, "assets", slug)
-        n_img = len([f for f in os.listdir(imgs) if f.endswith(".png")]) if os.path.isdir(imgs) else 0
+        # 只数「页图」pNNN.xxx，且后缀不能写死 —— PDF 出 .png，Office 出 .jpg。
+        # 只认 .png 的话，PPTX 课程永远报 images=MISS(0/132)（实测踩过）。
+        n_img = (len([f for f in os.listdir(imgs)
+                      if re.fullmatch(r"p\d+\.(png|jpe?g)", f, re.I)])
+                 if os.path.isdir(imgs) else 0)
         ok_pages = "OK " if data else "MISS"
         ok_note = "OK " if os.path.exists(note) else "MISS"
         ok_img = "OK " if n_img >= rec["page_count"] else "MISS"

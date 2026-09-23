@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -122,19 +123,36 @@ for pos in ("head", "tail"):
     check(f"页脚在 {pos} 时被剥掉", "普通化学" not in got, str(got))
 
 # ---------------------------------------------------------------- 4 真实产物回归
+#
+# ★ 别把课程名写死：原来盯着 学习库\普通化学\notes，那门课一不在，
+#   这一整段回归就**静默跳过**（打印一句「还没生成笔记」就过去了）——
+#   回归检查悄悄失效比失败更危险。改成自动挑一门齐活的课。
+sys.path.insert(0, HERE)
+import _pick  # noqa: E402
 
-LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", "普通化学", "notes"))
-if os.path.isdir(LIB):
-    for fn in sorted(os.listdir(LIB)):
-        if not fn.lower().endswith(".md") or not fn[0].isdigit():
+_picked = _pick.pick(PROJ)
+if _picked:
+    _course, _croot, _ = _picked
+    NOTES = os.path.join(_croot, "notes")
+    # 页脚关键词取自该课程**自己**的账本（run.py 判定的 running_head），
+    # 不写死「普通化学」。
+    _src = json.load(open(os.path.join(_croot, ".ledger", "source.json"),
+                          encoding="utf-8"))
+    _feet = sorted({(v.get("running_head") or "") for v in _src["sources"].values()}
+                   - {""})
+    check(f"取到了页脚关键词（{_course}）", bool(_feet), str(_feet))
+    _n_checked = 0
+    for fn in sorted(os.listdir(NOTES)):
+        if not fn.endswith(".md") or fn.startswith("_"):
             continue
-        with open(os.path.join(LIB, fn), encoding="utf-8") as f:
+        with open(os.path.join(NOTES, fn), encoding="utf-8") as f:
             text = f.read()
-        # 去掉笔记自己的元信息行（那里本来就会出现「页眉：普通化学13」）
+        # 去掉笔记自己的元信息行（那里本来就会出现「页眉：…」）
         body = "\n".join(l for l in text.split("\n")
                          if not l.startswith("> 来源：") and not l.startswith("> 已自动剔除"))
-        hits = re.findall(r"普通化学\s*\d+", body)
-        check(f"{fn} 正文里没有页脚残留", not hits, f"残留 {len(hits)} 处 {hits[:3]}")
+        hits = [h for h in _feet if re.search(re.escape(h) + r"\s*\d+", body)]
+        check(f"{fn} 正文里没有页脚残留", not hits, f"残留 {hits[:3]}")
+        _n_checked += 1
 
         # 图片链接必须合法（不含空格）+ 目标文件真的存在。
         # `![x](../assets/01 GC01/p.png)` 这种带空格的链接在 CommonMark 里是非法链接，
@@ -143,9 +161,10 @@ if os.path.isdir(LIB):
         bad = [u for u in links if re.search(r"\s", u)]
         check(f"{fn} 图片链接不含空格（合法 CommonMark）", not bad, str(bad[:2]))
         missing = [u for u in links if not os.path.exists(
-            os.path.normpath(os.path.join(LIB, u)))]
+            os.path.normpath(os.path.join(NOTES, u)))]
         check(f"{fn} 图片链接指向的文件都存在", not missing,
               f"{len(missing)} 个缺失，例如 {missing[:2]}")
+    check("真的检查了讲次笔记（不是空跑）", _n_checked > 0, f"{_n_checked} 篇")
 else:
     PASSES.append("（跳过真实产物回归：还没生成笔记）")
 

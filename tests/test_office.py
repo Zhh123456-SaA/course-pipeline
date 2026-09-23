@@ -103,6 +103,18 @@ else:
             check("批注挂在 Office 讲次上",
                   any("细胞膜" in (r.get("lecture_id") or "") for r in recs))
 
+        # ★ 回归（真实事故）：run.py check 里把页图后缀写死成 .png，
+        #   Office 出的是 .jpg → PPTX 课程永远报 images=MISS(0/132)。
+        #   体检报告骗人比没有体检更糟。
+        out = subprocess.run([sys.executable, os.path.join(PROJ, "run.py"),
+                              "--course", COURSE, "check"],
+                             cwd=PROJ, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+        line = next((x for x in (out.stdout or "").splitlines()
+                     if "细胞膜" in x and "images=" in x), "")
+        check("check 认得 .jpg 页图（不写死 .png）", "images=OK" in line, line.strip())
+        check("  页图计数是 132/132", "(132/132)" in line, line.strip())
+
 # ---------------------------------------------------------------- 汇总
 for p in PASSES:
     print("PASS  " + p)

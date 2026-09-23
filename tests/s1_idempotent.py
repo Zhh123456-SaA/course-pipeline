@@ -7,12 +7,14 @@
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 # Windows 控制台默认 GBK：print 中文/emoji 会抛 UnicodeEncodeError 并让退出码变 1
 # （明明全过却报失败）。强制 UTF-8 输出。
@@ -24,11 +26,36 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
-COURSE = "普通化学"
-LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", COURSE))
+sys.path.insert(0, HERE)
+import _pick  # noqa: E402
 
+# ★ 铁律：测试**绝不允许**把真实课程当测试床。
+#   真实事故：本测试原来直接对着用户的 学习库\普通化学 跑，还在第 6 节
+#   rmtree 掉它的 notes/ 与 assets/。虽然那些目录可重建，但「测试去删用户的
+#   真实数据」本身就是设计错误 —— 万一哪天清理逻辑写错，删掉的就不是可重建的了。
+#
+#   现在：① 只把来源课程当**只读素材**；② 复制一份到临时沙箱库；
+#        ③ 全部操作走 COURSE_LIB 指向沙箱；④ 跑完（含异常退出）删掉沙箱。
+SRC_COURSE = "普通化学"
+REAL_LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库"))
+SANDBOX = os.path.abspath(os.path.join(
+    tempfile.gettempdir(), "course-pipeline-selftest", os.getpid().__str__()))
+_picked = _pick.pick(PROJ, prefer=SRC_COURSE)
+if not _picked:
+    print(f"{REAL_LIB} 下没有「素材+账本+笔记」齐全的课程，"
+          f"先跑一次 run.py --course <课程> all")
+    raise SystemExit(2)
+COURSE, REAL_COURSE, FIRST_STEM = _picked
+LIB = os.path.join(SANDBOX, COURSE)
 FAILS: list[str] = []
 PASSES: list[str] = []
+
+
+def _cleanup() -> None:
+    _pick.cleanup_sandbox(SANDBOX)
+
+
+atexit.register(_cleanup)
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -49,8 +76,10 @@ def snapshot(root: str, subdirs=("notes", ".ledger", "assets")) -> dict[str, str
 
 
 def run(*args: str) -> str:
+    env = dict(os.environ, COURSE_LIB=SANDBOX)
     r = subprocess.run([sys.executable, os.path.join(PROJ, "run.py"), *args],
-                       capture_output=True, text=True, encoding="utf-8", cwd=PROJ)
+                       capture_output=True, text=True, encoding="utf-8",
+                       cwd=PROJ, env=env)
     return (r.stdout or "") + (r.stderr or "")
 
 
@@ -61,11 +90,18 @@ def diff(a: dict, b: dict) -> tuple[list, list, list]:
     return added, removed, changed
 
 
-# ---------------------------------------------------------------- 0 前置
+# ---------------------------------------------------------------- 0 前置：搭沙箱
 
-if not os.path.isdir(LIB):
-    print(f"找不到课程目录 {LIB}，先跑一次 run.py --course {COURSE} all")
-    raise SystemExit(2)
+# 只复制「只读素材 source/」与「账本 .ledger/」；assets/ 与 notes/ 让程序自己重建。
+# 真实课程到这里为止：后面所有写操作都打在 SANDBOX 里。
+os.makedirs(LIB, exist_ok=True)
+for sub in ("source", ".ledger"):
+    s = os.path.join(REAL_COURSE, sub)
+    if os.path.isdir(s):
+        shutil.copytree(s, os.path.join(LIB, sub), dirs_exist_ok=True)
+check("沙箱库建好了（不是真实课程）", os.path.isdir(LIB) and SANDBOX != REAL_LIB, LIB)
+check("沙箱里搬来了账本", bool(os.listdir(os.path.join(LIB, ".ledger"))))
+_real_before = snapshot(REAL_COURSE, (".ledger", "source"))
 
 # ---------------------------------------------------------------- 1 第一次跑
 
@@ -98,7 +134,7 @@ check("强制重算：页图字节不变（PNG 编码确定性）",
 
 # ---------------------------------------------------------------- 4 手写内容保护
 
-note = os.path.join(LIB, "notes", "01 GC01.md")
+note = os.path.join(LIB, "notes", FIRST_STEM + ".md")
 with open(note, "r", encoding="utf-8") as f:
     original = f.read()
 MARK = "\n\n我在这一行写了自己的笔记，程序不许动它。\n"
@@ -165,6 +201,17 @@ check("重建后生成块与原来完全一致（可从账本无损重建）",
       f"gen 长度 {len(generated(before_view))} vs {len(generated(after_view))}")
 check("批注槽仍然存在（结构没丢）",
       f"批注区 p1 开始" in after_view and f"批注区 p1 结束" in after_view)
+
+# ---------------------------------------------------------------- 7 真实课程没被动过
+#
+# ★ 这条是本文件最重要的断言。测试存在的意义是「证明程序对」，
+#   不是「顺手把用户的库改一遍」。整场跑完，素材课程的账本与素材必须字节不变。
+
+_real_after = snapshot(REAL_COURSE, (".ledger", "source"))
+_a, _r, _c = diff(_real_before, _real_after)
+check("真实课程的账本/素材全程零改动（测试没动用户数据）",
+      not (_a or _r or _c),
+      f"新增{_a[:3]} 删除{_r[:3]} 改动{_c[:3]}")
 
 # ---------------------------------------------------------------- 汇总
 
