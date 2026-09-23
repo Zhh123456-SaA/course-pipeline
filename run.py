@@ -34,6 +34,7 @@ import cards as cards_mod  # noqa: E402
 import engine  # noqa: E402
 import kcs as kcs_mod  # noqa: E402
 import pdf_source  # noqa: E402
+import source_ingest  # noqa: E402
 import qa  # noqa: E402
 import render  # noqa: E402
 
@@ -68,11 +69,15 @@ def cmd_ingest(course: str, force: bool = False, images: bool = True,
     sources = led.load_sources()
     report: list[str] = []
 
-    pdfs = sorted(glob.glob(os.path.join(src_dir, "*.pdf")))
-    if not pdfs:
-        raise SystemExit(f"{src_dir} 里没有 PDF。")
+    files = sorted(
+        f for f in glob.glob(os.path.join(src_dir, "*"))
+        if os.path.isfile(f) and source_ingest.supported(f)
+    )
+    if not files:
+        raise SystemExit(f"{src_dir} 里没有可摄取的素材"
+                         f"（支持 {'、'.join(source_ingest.ALL_SUFFIXES)}）。")
 
-    for pdf in pdfs:
+    for pdf in files:
         stem = os.path.splitext(os.path.basename(pdf))[0]
         slug = pdf_source.slugify(stem)
         digest = sha256_file(pdf)
@@ -87,8 +92,8 @@ def cmd_ingest(course: str, force: bool = False, images: bool = True,
             report.append(f"[skip] {stem}  源未变化（{rec['page_count']} 页）")
             continue
 
-        data = pdf_source.ingest(pdf, images_dir=assets_dir, scale=scale,
-                                 render_images=images)
+        data = source_ingest.ingest_any(pdf, images_dir=assets_dir, scale=scale,
+                                        render_images=images)
         data["id"] = stem
         data["slug"] = slug
         data["file"] = os.path.basename(pdf)
@@ -103,8 +108,12 @@ def cmd_ingest(course: str, force: bool = False, images: bool = True,
             "boilerplate": data["boilerplate"],
             "running_head": data["running_head"],
         }
-        report.append(f"[ingest] {stem}  {data['page_count']} 页，"
-                      f"剥掉页眉行 {sum(p['lines_removed'] for p in data['pages'])} 处")
+        kind = data.get("kind", "pdf")
+        warn = data.get("warn") or ""
+        report.append(f"[ingest] {stem}  {data['page_count']} 页"
+                      f"（{kind}），剥掉页眉行 "
+                      f"{sum(p['lines_removed'] for p in data['pages'])} 处"
+                      + (f"　⚠️ {warn}" if warn else ""))
 
     led.save_sources(sources)
     return report

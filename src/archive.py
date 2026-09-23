@@ -116,10 +116,16 @@ def archive_ledger_path(library_root: str) -> str:
 
 
 def build_archive(library_root: str, ann_roots: Iterable[str],
-                  extra_source_dirs: Iterable[str] = ()) -> tuple[dict, list[str]]:
+                  extra_source_dirs: Iterable[str] = (),
+                  match_only: bool = True) -> tuple[dict, list[str]]:
     """扫描批注源 → 返回 (归档数据, 报告行)。
 
-    不落盘，便于测试。匹配依据：源文件 sha1。
+    `match_only=True`（默认）：**只归档属于本课程的批注**（源文件 sha1 落在本课程
+    `source/` 里）。不属于的只在报告里列出来，不写进本课程的账本。
+
+    为什么必须这样（实测踩到）：`archive` 是按课程跑的，早先会把**所有**批注源的记录
+    都塞进当前课程的账本 —— 于是用户那门生物课的批注被归到了「物理」下面，
+    既渲染不出来（源文件不在物理的 source/），又污染了物理的账本。
     """
     report: list[str] = []
     ann_dirs = scan_annotation_dirs(ann_roots)
@@ -133,28 +139,38 @@ def build_archive(library_root: str, ann_roots: Iterable[str],
 
     # 学习库里的讲次：源文件 sha1 → 讲次 id
     lecture_by_sha: dict[str, str] = {}
-    lib_src = os.path.join(library_root, "source")
+    lib_src = os.path.abspath(os.path.join(library_root, "source"))
     for sha, path in src_index.items():
-        if os.path.dirname(path) == os.path.abspath(lib_src):
+        if os.path.dirname(path) == lib_src:
             lecture_by_sha[sha] = os.path.splitext(os.path.basename(path))[0]
 
     by_sha: dict[str, dict] = {}
+    foreign: list[str] = []
     for sha, d in sorted(ann_dirs.items()):
         anns = load_annotations(d)
         if not anns:
             continue
         src_path = src_index.get(sha)
+        lec = lecture_by_sha.get(sha)
+        if match_only and not lec:
+            foreign.append(f"{os.path.basename(src_path) if src_path else sha[:12]}"
+                           f"（{len(anns)} 条）")
+            continue
         by_sha[sha] = {
             "sha1": sha,
             "ann_dir": d,
             "source_file": os.path.basename(src_path) if src_path else "",
-            "lecture_id": lecture_by_sha.get(sha),   # None = 学习库里还没有这份讲义
+            "lecture_id": lec,
             "count": len(anns),
             "pages": sorted({int(a.get("page", 0)) for a in anns}),
             "annotations": anns,
         }
-        tag = by_sha[sha]["lecture_id"] or "（学习库里没有对应讲义，暂不渲染）"
-        report.append(f"[scan ] {sha[:12]}  {len(anns)} 条批注  → {tag}")
+        report.append(f"[scan ] {sha[:12]}  {len(anns)} 条批注  → {lec}")
+    if foreign:
+        report.append(f"[other] 有 {len(foreign)} 组批注**不属于本课程**，未入库："
+                      + "、".join(foreign[:5])
+                      + ("…" if len(foreign) > 5 else "")
+                      + "。把对应素材放进 source/ 再跑本命令即可接管。")
 
     data = {"version": 1, "by_sha1": by_sha}
     return data, report

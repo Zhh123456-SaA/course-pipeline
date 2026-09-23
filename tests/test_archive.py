@@ -81,11 +81,20 @@ check("源讲义 sha1 能对上批注目录（归档的命门）", len(matched) 
 
 # ---------------------------------------------------------------- 2 归档落账本
 
-run("--course", COURSE, "archive")
+out = run("--course", COURSE, "archive")
 data = archive.load_archive(LIB)
 by_sha = data.get("by_sha1", {})
-check("批注已进账本 .ledger/annotations.json", len(by_sha) >= 3, f"{len(by_sha)} 组")
+# 只归档**属于本课程**的批注（源文件 sha1 落在本课程 source/ 里）。
+# 早先是把所有批注源都塞进当前课程账本 —— 实测导致用户的生物课批注被归到「物理」下。
+check("批注已进账本 .ledger/annotations.json", len(by_sha) >= 2, f"{len(by_sha)} 组")
 check("账本是落盘的 JSON 文件", os.path.exists(archive.archive_ledger_path(LIB)))
+check("账本里的每一组都匹配到了本课程讲次",
+      all(r.get("lecture_id") for r in by_sha.values()),
+      str([r.get("lecture_id") for r in by_sha.values()]))
+check("不属于本课程的批注**不入库**（避免归属错课程）",
+      not [r for r in by_sha.values() if not r.get("lecture_id")])
+check("不属本课程的批注会被**报告**出来（提醒你去接管）",
+      "[other]" in out, out[-200:] if "[other]" not in out else "")
 
 lec = "05第五讲-动力学1_2026"
 target = [r for r in by_sha.values() if r.get("lecture_id") == lec]
@@ -102,9 +111,6 @@ if target:
           {10, 11, 12, 13, 21} <= set(rec["pages"]), str(rec["pages"]))
     check("批注页号已排序", rec["pages"] == sorted(rec["pages"]), str(rec["pages"]))
 
-unmatched = [r for r in by_sha.values() if not r.get("lecture_id")]
-check("学习库里没有对应讲义的批注**不丢**（仍留在账本，只是不渲染）",
-      len(unmatched) >= 1, f"{len(unmatched)} 组未匹配")
 
 # ---------------------------------------------------------------- 3 渲染进笔记
 

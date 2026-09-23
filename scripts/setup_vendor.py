@@ -37,6 +37,15 @@ WANT = [
         f"cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}-manylinux",
         "py3-none-any",
     ]),
+    # PPTX/DOCX 摄取用 —— 复用真源 deepreader 的 extractor 需要这几个。
+    # 这一步之前一直没做，结果整门 PPTX 课程被挡在学习库门外（用户实测发现）。
+    ("lxml", [
+        f"cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}-win_amd64",
+        "py3-none-win_amd64",
+    ]),
+    ("python-pptx", ["py3-none-any"]),
+    ("XlsxWriter", ["py3-none-any"]),
+    ("typing-extensions", ["py3-none-any"]),
 ]
 
 
