@@ -90,53 +90,116 @@ def render_kc_block(kc: dict) -> str:
     imp = _KC_IMP_CN.get(kc.get("importance"), kc.get("importance", ""))
     star = _KC_IMP_STAR.get(kc.get("importance"), "")
     hub = " · 🧭 枢纽" if kc.get("is_hub") else ""
+    part = f" · 📂 {kc['part']}" if kc.get("part") else ""
     out.append(f"##### 🎯 {kc.get('label', '')}　`{kc.get('id', '')}`")
     out.append("")
-    out.append(f"> {t} · {imp} {star}{hub}")
+    out.append(f"> {t} · {imp} {star}{hub}{part}")
     for p in kc.get("points") or []:
         out.append(f"> - {p}")
     deps = kc.get("deps") or []
     if deps:
-        out.append(f"> - 依赖：{'、'.join(deps)}")
+        out.append(f"> - 前置：{'、'.join(deps)}")
     for q in kc.get("questions") or []:
         out.append(f"> - 💬 **你问过**：{q.get('q', '')}")
     return "\n".join(out)
 
 
+def render_outline_block(outline: dict) -> str:
+    """讲次导览：AI 读完课件的导览/目标页后写出的骨架。
+
+    用户建议的产物 —— 让 AI 先领会「老师是怎么组织这一讲的」，
+    后面的知识点归属与依赖判定才有依据。
+    """
+    if not outline:
+        return ""
+    parts = outline.get("parts") or []
+    objs = outline.get("objectives") or []
+    title = outline.get("title") or ""
+    if not (parts or objs or title):
+        return ""
+    out: list[str] = ["### 🧭 本讲导览", ""]
+    if title:
+        out.append(f"**{title}**")
+        out.append("")
+    if objs:
+        out.append("**课件写明的学习目标**")
+        out.append("")
+        for o in objs:
+            out.append(f"- {o.rstrip(chr(65307) + chr(59))}")
+        out.append("")
+    if parts:
+        out.append("**结构**")
+        out.append("")
+        out.append("| # | 部分 | 页 | 讲什么 |")
+        out.append("|---|---|---|---|")
+        for i, p in enumerate(parts, 1):
+            out.append(f"| {i} | {p.get('label', '')} "
+                       f"| {p.get('from', '?')}–{p.get('to', '?')} "
+                       f"| {p.get('summary', '')} |")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 def render_overview_body(course: str, chapters: list[dict]) -> str:
-    """课程级知识点总览。"""
+    """课程级知识点总览：**按讲次结构分组**。"""
     total = sum(len(c.get("kcs") or []) for c in chapters)
     n_must = sum(1 for c in chapters for k in (c.get("kcs") or [])
                  if k.get("importance") == "must")
     n_q = sum(1 for c in chapters for k in (c.get("kcs") or []) if k.get("questions"))
+    n_dep = sum(1 for c in chapters for k in (c.get("kcs") or []) if k.get("deps"))
     out: list[str] = [
-        f"> 共 **{total}** 个知识点（其中必须掌握 {n_must} 个，"
-        f"**{n_q} 个你问过问题**）。本页由程序生成，重跑会自动更新。",
+        f"> 共 **{total}** 个知识点（必须掌握 {n_must} 个；**{n_q} 个你问过问题**；"
+        f"{n_dep} 个有前置依赖）。本页由程序生成，重跑会自动更新。",
         "",
     ]
     for c in chapters:
         kcs = c.get("kcs") or []
         if not kcs:
             continue
-        out.append(f"## {c.get('label') or c.get('id')}")
+        outline = c.get("outline") or {}
+        head = outline.get("title") or c.get("label") or c.get("id")
+        out.append(f"## {head}")
         out.append("")
-        out.append("| id | 知识点 | 类型 | 重要度 | 出处页 | 你问过 |")
-        out.append("|---|---|---|---|---|---|")
+        if outline.get("objectives"):
+            out.append("**学习目标**：" + "；".join(o.rstrip("；;") for o in outline["objectives"]))
+            out.append("")
+
+        # 按 part 分组；没有 part 的放最后
+        order = [p.get("label") for p in (outline.get("parts") or [])]
+        groups: dict[str, list[dict]] = {}
         for k in kcs:
-            t = _KC_TYPE_CN.get(k.get("type"), k.get("type", ""))
-            imp = _KC_IMP_CN.get(k.get("importance"), k.get("importance", ""))
-            pages = "、".join(str(p) for p in (k.get("pages") or []))
-            nq = len(k.get("questions") or [])
-            hub = " 🧭" if k.get("is_hub") else ""
-            out.append(f"| `{k.get('id','')}` | {k.get('label','')}{hub} | {t} | {imp} "
-                       f"| {pages} | {'💬 ' + str(nq) if nq else ''} |")
-        out.append("")
+            groups.setdefault(k.get("part") or "", []).append(k)
+        keys = [x for x in order if x in groups] + \
+               [x for x in groups if x and x not in order] + \
+               ([""] if "" in groups else [])
+
+        for key in keys:
+            if key:
+                summary = next((p.get("summary", "") for p in (outline.get("parts") or [])
+                                if p.get("label") == key), "")
+                out.append(f"### 📂 {key}" + (f" — {summary}" if summary else ""))
+            else:
+                out.append("### 📂 （未归属）")
+            out.append("")
+            out.append("| id | 知识点 | 类型 | 重要度 | 页 | 前置 | 你问过 |")
+            out.append("|---|---|---|---|---|---|---|")
+            for k in sorted(groups[key], key=lambda x: (x.get("page") or 0, x["id"])):
+                t = _KC_TYPE_CN.get(k.get("type"), k.get("type", ""))
+                imp = _KC_IMP_CN.get(k.get("importance"), k.get("importance", ""))
+                pages = "、".join(str(p) for p in (k.get("pages") or []))
+                deps = "、".join(k.get("deps") or []) or ""
+                nq = len(k.get("questions") or [])
+                hub = " 🧭" if k.get("is_hub") else ""
+                out.append(f"| `{k.get('id','')}` | {k.get('label','')}{hub} | {t} | {imp} "
+                           f"| {pages} | {deps} | {'💬 ' + str(nq) if nq else ''} |")
+            out.append("")
     return "\n".join(out).rstrip() + "\n"
 
 
 def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
                         annotations_by_page: dict[int, list[dict]] | None = None,
-                        kcs: list[dict] | None = None) -> str:
+                        kcs: list[dict] | None = None,
+                        outline: dict | None = None) -> str:
     """渲染一篇讲义笔记的「生成块」内容。
 
     `annotations_by_page`：来自 ppt-deepreader 的框选追问（归档通道搬进来的）。
@@ -169,6 +232,13 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
     out.append("")
     out.append("---")
     out.append("")
+    # 讲次导览（AI 读完课件的导览/目标页后写出的骨架）
+    ob = render_outline_block(outline or {})
+    if ob:
+        out.append(ob)
+        out.append("")
+        out.append("---")
+        out.append("")
 
     for p in lecture["pages"]:
         no = p["no"]

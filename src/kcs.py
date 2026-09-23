@@ -32,7 +32,9 @@ import engine
 
 #: 改这个会让全部 KC 提取缓存失效（与 deepreader 的 PROMPT_VERSION 同思路）。
 #: v2：用户实测反馈「太碎 / 了解的事实类太多 / 医学包装要不得」→ 重写 prompt + 加硬过滤。
-KC_PROMPT_VERSION = 2
+#: v3：用户建议「让 AI 自己读导览页/学习目标，领会课件思路，把知识点与结构对应并
+#:     建立逻辑联系」→ 新增 ①讲次结构提取 ②知识点归属 ③收口串联。
+KC_PROMPT_VERSION = 3
 
 #: 每批喂给模型多少页。太小会丢上下文、太大模型会走神且更容易截断。
 DEFAULT_WINDOW = 8
@@ -83,6 +85,8 @@ SYSTEM = """你在为一份大学课程讲义建立「知识点骨架」。
 - points     : 3~5 条，**每条都要带实信息** —— 公式、成立条件、适用范围、易错点、
                推导的关键一步。**不要**写「这个概念很重要」这种空话，也**不要**写应用举例。
 - page       : 主要出自第几页（**必须是我给出的页号之一**）
+- part       : 它属于「本讲结构」里的哪一部分（填 part 的 label 原文；
+               没给我结构、或确实不属于任何部分就填 ""）
 - deps       : 依赖同批里哪些知识点的 label（填 label 原文；没有就 []）
 - is_hub     : 布尔。它是不是被后面反复用到的基础（像「牛顿第二定律」那样）？
 
@@ -93,6 +97,181 @@ SYSTEM = """你在为一份大学课程讲义建立「知识点骨架」。
 铁律：
 1. 只提炼讲义里**真正讲了**的内容，不脑补、不补充课本外的东西。
 2. 已经在「本讲已有知识点」里出现过的，**不要重复提炼**。"""
+
+
+# ---------------------------------------------------------------- 讲次结构（导览/目标）
+#
+# 用户建议：「让 AI 自己阅读课件，领会课件的思路（本讲导览、学习目标之类的页面），
+# 将其与问题对应，并建立知识点之间的逻辑联系。」
+#
+# 为什么有用：逐窗口提取只能看到 8 页，不知道「这一讲整体在讲什么、分几块、先后如何」，
+# 于是知识点只是一堆并列的散点，deps 也只能勉强连上同窗口的邻居。
+# 先把课件的**骨架**读出来，后面的提取与串联才有依据。
+
+#: 判定「导览/目标页」的关键词
+_OVERVIEW_RE = re.compile(
+    r"学习目标|教学目标|本章|本节|目录|导览|重点|难点|要求|小结|概述|框架"
+    r"|知识结构|内容提要|本章内容|教学安排|课时"
+)
+
+OUTLINE_SYSTEM = """你在读一份大学课程的课件。任务：**先读懂这份课件的思路**，把它的骨架写出来。
+
+我要的不是复述内容，而是**老师是怎么组织这一讲的**：
+分几个部分、每部分解决什么问题、先讲什么后讲什么、明确写了哪些学习目标。
+
+输出字段：
+- title      : 这一讲的标题（从课件里取，不要自己编）
+- objectives : 课件**明确写出**的学习目标/要求（没写就空数组，不要脑补）
+- parts      : 这一讲分成的部分，每部分给：
+               label（部分名，不超过 15 字）
+               from / to（大致覆盖第几页到第几页，用我给的页号）
+               summary（这部分解决什么问题，一句话）
+
+只输出 JSON，不要解释、不要 markdown 围栏：
+{"title": "...", "objectives": ["..."],
+ "parts": [{"label": "...", "from": 6, "to": 19, "summary": "..."}]}
+
+铁律：
+1. **以课件的实际组织为准**，不要套用你熟悉的教材目录。
+2. 部分数量通常在 **3~6** 个之间；太少没有结构，太多等于没分。
+3. 页号必须落在我给出的范围内。"""
+
+LINK_SYSTEM = """你在为一份课程讲义的知识点**建立逻辑联系**。
+
+我给你这一讲的结构（老师是怎么组织的）和已经提取出来的全部知识点。
+请判断它们之间的**先后与依赖** —— 学哪个之前必须先懂哪个。
+
+对每个知识点给出：
+- part   : 它属于我给的哪个部分（填 part 的 label 原文；实在不属于任何部分就填 ""）
+- deps   : 它**直接**依赖哪些知识点（填 id；没有就 []）。
+           判据：不懂 deps 里的东西，就没法学懂它。**只填直接前置，不要把整条链都写上。**
+- is_hub : 它是不是被后面反复用到的基础（像「牛顿第二定律」那样）
+- order  : 建议的学习顺序（把全部 id 排一遍，从先到后）
+
+只输出 JSON：
+{"links": [{"id": "L05.1", "part": "...", "deps": [], "is_hub": true}],
+ "order": ["L05.1", "L05.2"]}
+
+铁律：
+1. **只填真实的直接前置**。宁可少填，不要为了"看起来有结构"而乱连。
+2. order 必须包含我给的全部 id，且每个只出现一次。
+3. 不要发明新知识点，也不要改 id。"""
+
+
+def page_headlines(pages: list[dict], max_len: int = 42) -> str:
+    """每页头一行的速览 —— 让模型先对全讲有个鸟瞰（很便宜）。"""
+    out: list[str] = []
+    for p in sorted(pages, key=lambda x: x.get("no", 0)):
+        t = (p.get("text") or "").strip()
+        if not t:
+            continue
+        first = t.split("\n")[0].strip()[:max_len]
+        if first:
+            out.append(f"第{p.get('no')}页: {first}")
+    return "\n".join(out)
+
+
+def overview_pages(pages: list[dict], limit: int = 6) -> list[int]:
+    """挑出「导览/目标」类页面。
+
+    命中关键词的优先；一个都没命中就退回最前面几页（很多课件把目标写在开头）。
+    """
+    hits = [int(p["no"]) for p in pages
+            if _OVERVIEW_RE.search(p.get("text") or "")]
+    if not hits:
+        hits = [int(p["no"]) for p in sorted(pages, key=lambda x: x["no"])[:3]]
+    return sorted(set(hits))[:limit]
+
+
+def outline_text(pages_by_no: dict[int, dict], nos: list[int],
+                 per_page_limit: int = 1500) -> str:
+    chunks: list[str] = []
+    for no in nos:
+        t = ((pages_by_no.get(no) or {}).get("text") or "").strip()
+        if t:
+            chunks.append(f"--- 第 {no} 页 ---\n{t[:per_page_limit]}")
+    return "\n\n".join(chunks)
+
+
+def extract_outline(pages_by_no: dict[int, dict], nos: list[int],
+                    all_pages: list[dict]) -> tuple[dict, dict]:
+    """读导览页 + 全讲页标题速览 → 讲次结构。返回 (outline, meta)。"""
+    user = (f"【导览页 / 学习目标页】\n{outline_text(pages_by_no, nos)}\n\n"
+            f"【全讲每一页的头一行（速览，帮你判断组织）】\n"
+            f"{page_headlines(all_pages)}\n\n请输出 JSON。")
+    obj, meta = engine.chat_json(OUTLINE_SYSTEM, user, max_tokens=8000)
+    if not isinstance(obj, dict):
+        return {}, meta
+    parts = []
+    seen: set[str] = set()
+    for p in obj.get("parts") or []:
+        if not isinstance(p, dict):
+            continue
+        lb = str(p.get("label") or "").strip()
+        if not lb or lb in seen:
+            continue
+        seen.add(lb)
+        try:
+            f, t = int(p.get("from")), int(p.get("to"))
+        except (TypeError, ValueError):
+            continue
+        if f > t:
+            f, t = t, f
+        parts.append({"label": lb, "from": f, "to": t,
+                      "summary": str(p.get("summary") or "").strip()})
+    return {
+        "title": str(obj.get("title") or "").strip(),
+        "objectives": [str(x).strip() for x in (obj.get("objectives") or []) if str(x).strip()],
+        "parts": parts,
+    }, meta
+
+
+def extract_links(outline: dict, kcs: list[dict]) -> tuple[dict, dict]:
+    """收口：把全部知识点串起来 —— 归属部分 + 直接前置依赖 + 枢纽判定 + 学习顺序。"""
+    lines: list[str] = []
+    for k in kcs:
+        first_point = (k.get("points") or [""])[0][:60]
+        lines.append(f"{k['id']} | {k['label']} | 第{k.get('page')}页 | {first_point}")
+    parts = "、".join(p["label"] for p in (outline.get("parts") or [])) or "（未提取到结构）"
+    obj_txt = "；".join(outline.get("objectives") or []) or "（课件没写明确目标）"
+
+    user = (f"【本讲标题】{outline.get('title') or '（未知）'}\n"
+            f"【课件写明的学习目标】{obj_txt}\n"
+            f"【本讲结构】{parts}\n\n"
+            f"【全部知识点】（id | 名称 | 出处页 | 首条要点）\n" + "\n".join(lines)
+            + "\n\n请输出 JSON。")
+    got, meta = engine.chat_json(LINK_SYSTEM, user, max_tokens=12000)
+    return (got if isinstance(got, dict) else {}), meta
+
+
+def apply_links(kcs: list[dict], links: dict) -> tuple[list[dict], list[str]]:
+    """把收口结果套回知识点。只接受**能解析到真实 id** 的依赖，悬空的一律丢。"""
+    by_id = {k["id"]: k for k in kcs}
+    for row in links.get("links") or []:
+        if not isinstance(row, dict):
+            continue
+        k = by_id.get(str(row.get("id") or ""))
+        if not k:
+            continue
+        k["part"] = str(row.get("part") or "").strip()
+        deps = []
+        for d in row.get("deps") or []:
+            d = str(d).strip()
+            if d in by_id and d != k["id"] and d not in deps:
+                deps.append(d)
+        if deps:
+            k["deps"] = deps
+        k["is_hub"] = bool(row.get("is_hub"))
+
+    order: list[str] = []
+    for i in links.get("order") or []:
+        i = str(i).strip()
+        if i in by_id and i not in order:
+            order.append(i)
+    for k in sorted(kcs, key=lambda x: (x.get("page") or 0, x["id"])):
+        if k["id"] not in order:
+            order.append(k["id"])
+    return kcs, order
 
 
 # ---------------------------------------------------------------- 工具
@@ -237,6 +416,7 @@ def normalize_kcs(raw_kcs: Iterable[dict], lecture_id: str, prefix: str,
             "points": points[:4],
             "page": page,
             "pages": [page],
+            "part": str(kc.get("part") or "").strip(),
             "deps": [],                       # 先放 label，合并阶段再解析成 id
             "_dep_labels": dep_labels,
             "is_hub": bool(kc.get("is_hub")),
@@ -281,15 +461,17 @@ def chapters_of(data: dict) -> dict[str, dict]:
     return {c.get("id"): c for c in data.get("chapters", [])}
 
 
-def put_lecture(data: dict, lecture_id: str, label: str, kcs: list[dict]) -> None:
+def put_lecture(data: dict, lecture_id: str, label: str, kcs: list[dict],
+                outline: dict | None = None, order: list[str] | None = None) -> None:
     """把一讲的 KC 写进骨架（覆盖该讲）。"""
     chapters = data.setdefault("chapters", [])
-    for c in chapters:
+    entry = {"id": lecture_id, "label": label, "kcs": kcs,
+             "outline": outline or {}, "order": order or []}
+    for i, c in enumerate(chapters):
         if c.get("id") == lecture_id:
-            c["label"] = label
-            c["kcs"] = kcs
+            chapters[i] = entry
             return
-    chapters.append({"id": lecture_id, "label": label, "kcs": kcs})
+    chapters.append(entry)
 
 
 # ---------------------------------------------------------------- 缓存
@@ -298,9 +480,11 @@ def cache_path(library_root: str) -> str:
     return os.path.join(library_root, ".ledger", "kc_cache.json")
 
 
-def _window_key(text: str, questions: str, known: list[str], model: str) -> str:
+def _window_key(text: str, questions: str, known: list[str], model: str,
+                outline: dict | None = None) -> str:
     return content_hash({"v": KC_PROMPT_VERSION, "text": text, "q": questions,
-                         "known": known, "model": model})
+                         "known": known, "model": model,
+                         "outline": outline or {}})
 
 
 def _load_cache(library_root: str) -> dict:
@@ -314,9 +498,19 @@ def _save_cache(library_root: str, d: dict) -> None:
 
 # ---------------------------------------------------------------- 提取
 
-def extract_window(text: str, questions: str, known_labels: list[str]) -> tuple[list[dict], dict]:
+def extract_window(text: str, questions: str, known_labels: list[str],
+                   outline: dict | None = None) -> tuple[list[dict], dict]:
     """一次窗口提取。返回 (原始 kc 列表, 元信息)。截断会抛错（区分"上限不够"与"写不对"）。"""
     user = f"【讲义内容】\n{text}"
+    # 先把课件的结构告诉模型 —— 这样它提取时知道"这一块属于哪一部分"，
+    # 而不是把 8 页当成孤立的文本（用户建议：让 AI 领会课件的思路）。
+    if outline and outline.get("parts"):
+        user += ("\n\n【本讲结构（老师是怎么组织的；请在 part 字段里归属）】\n"
+                 + "\n".join(f"- {p['label']}（第 {p['from']}-{p['to']} 页）"
+                             f"：{p.get('summary', '')}" for p in outline["parts"]))
+    if outline and outline.get("objectives"):
+        user += ("\n\n【课件写明的学习目标】\n"
+                 + "\n".join(f"- {o}" for o in outline["objectives"]))
     if questions:
         user += questions
     if known_labels:
@@ -337,19 +531,45 @@ def extract_window(text: str, questions: str, known_labels: list[str]) -> tuple[
 def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
                     pages: list[dict], annotations: list[dict],
                     window: int = DEFAULT_WINDOW, use_cache: bool = True,
-                    progress=None) -> tuple[list[dict], list[str]]:
-    """把一讲的所有页提炼成 KC 列表。返回 (kcs, 报告行)。"""
+                    progress=None) -> tuple[list[dict], dict, list[str]]:
+    """把一讲的所有页提炼成知识点。返回 (kcs, outline, 报告行)。
+
+    三步（用户建议的「先领会课件思路，再建立逻辑联系」）：
+      ① **先读导览页/学习目标页** → 讲次结构（分几部分、每部分讲什么、学习目标）
+      ② 逐窗口提取，把结构喂进去 → 每个知识点归属到某个部分
+      ③ **收口串联** → 修正依赖关系、判定枢纽、给出学习顺序
+    """
     report: list[str] = []
     pages_by_no = {int(p["no"]): p for p in pages}
     # 没有文字层的页跳过（没东西可提炼）
     usable = [n for n in sorted(pages_by_no)
               if len(((pages_by_no[n].get("text") or "")).strip()) >= 30]
     if not usable:
-        return [], [f"[kc   ] {lecture_id}：没有可用文字，跳过"]
+        return [], {}, [f"[kc   ] {lecture_id}：没有可用文字，跳过"]
 
     prefix = lecture_prefix(lecture_id)
     cache = _load_cache(library_root)
     model = engine.model_name()
+
+    # ---- ① 讲次结构 ----
+    ov_nos = overview_pages(pages)
+    outline: dict = {}
+    if use_cache and f"outline:{lecture_id}" in cache.get("by_key", {}):
+        outline = cache["by_key"][f"outline:{lecture_id}"]["outline"]
+        report.append(f"[outline] {lecture_id}：结构命中缓存")
+    else:
+        try:
+            outline, meta = extract_outline(pages_by_no, ov_nos, pages)
+            cache.setdefault("by_key", {})[f"outline:{lecture_id}"] = {"outline": outline,
+                                                                      "meta": meta}
+            parts = outline.get("parts") or []
+            report.append(f"[outline] {lecture_id}：读了第 {'、'.join(map(str, ov_nos))} 页"
+                          f" → 「{outline.get('title', '')}」分 {len(parts)} 部分"
+                          f"（{'、'.join(p['label'] for p in parts)}），"
+                          f"{meta.get('tokens', 0)} token")
+        except Exception as e:  # noqa: BLE001 - 结构提取失败不该让整讲挂掉
+            report.append(f"[warn ] {lecture_id} 结构提取失败（继续逐窗口提取）：{e}")
+            outline = {}
 
     all_kcs: list[dict] = []
     label_to_id: dict[str, str] = {}
@@ -362,14 +582,14 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
         text = render_window_text(pages_by_no, win)
         questions = render_questions(annotations, win)
         known = [k["label"] for k in all_kcs]
-        key = _window_key(text, questions, known, model)
+        key = _window_key(text, questions, known, model, outline)
 
         if use_cache and key in cache.get("by_key", {}):
             raw = cache["by_key"][key]["kcs"]
             reused += 1
         else:
             try:
-                raw, meta = extract_window(text, questions, known)
+                raw, meta = extract_window(text, questions, known, outline)
             except Exception as e:  # noqa: BLE001
                 report.append(f"[warn ] {lecture_id} 第 {win[0]}-{win[-1]} 页提取失败：{e}")
                 continue
@@ -396,6 +616,30 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
             progress(wi, len(win))
 
     resolve_deps(all_kcs)
+
+    # ---- ③ 收口串联：修正依赖、判定枢纽、给学习顺序 ----
+    order: list[str] = []
+    if all_kcs and outline:
+        lkey = f"links:{lecture_id}"
+        if use_cache and lkey in cache.get("by_key", {}):
+            links = cache["by_key"][lkey]["links"]
+            report.append(f"[link ] {lecture_id}：串联命中缓存")
+        else:
+            try:
+                links, lmeta = extract_links(outline, all_kcs)
+                cache.setdefault("by_key", {})[lkey] = {"links": links, "meta": lmeta}
+                total_tokens += lmeta.get("tokens", 0)
+            except Exception as e:  # noqa: BLE001
+                report.append(f"[warn ] {lecture_id} 串联失败（保留逐窗口的依赖）：{e}")
+                links = {}
+        if links:
+            all_kcs, order = apply_links(all_kcs, links)
+            n_dep = sum(1 for k in all_kcs if k.get("deps"))
+            n_part = sum(1 for k in all_kcs if k.get("part"))
+            n_hub = sum(1 for k in all_kcs if k.get("is_hub"))
+            report.append(f"[link ] {lecture_id}：{n_part}/{len(all_kcs)} 个知识点归属到部分，"
+                          f"{n_dep} 个有前置依赖，{n_hub} 个判为枢纽")
+
     _save_cache(library_root, cache)
     if drop_reasons:
         # 归类汇总（逐条打印太吵）
@@ -418,7 +662,7 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
                       f"（医学/临床/工程外衣）")
     report.append(f"[kc   ] {lecture_id}：{len(all_kcs)} 个知识点"
                   f"（新算 {called} 批 / 命中缓存 {reused} 批，{total_tokens} token）")
-    return all_kcs, report
+    return all_kcs, outline, report
 
 
 # ---------------------------------------------------------------- 关联追问

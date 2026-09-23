@@ -181,6 +181,73 @@ check("隔太远的追问不乱挂", n_far == 0, f"挂了 {n_far} 条")
 check("kcs_by_page 按页取",
       [k["id"] for k in K.kcs_by_page(demo_kcs, 10)] == ["L05.1"])
 
+# ---------------------------------------------------------------- 5b 讲次结构（导览页）
+# 用户建议：让 AI 先读课件的「本讲导览/学习目标」页，领会思路，再据此归属知识点。
+
+demo_pages = [
+    {"no": 1, "text": "封面"},
+    {"no": 2, "text": "本讲学习目标\n1. 掌握受力分析\n2. 理解惯性系"},
+    {"no": 3, "text": "本章内容\n第一部分 力的种类\n第二部分 牛顿定律"},
+    {"no": 10, "text": "张力：拉紧的绳……"},
+    {"no": 11, "text": ""},
+]
+ov = K.overview_pages(demo_pages)
+check("能认出导览/目标页", set(ov) >= {2, 3} and 10 not in ov, str(ov))
+check("导览页数有上限", len(K.overview_pages(demo_pages, limit=1)) == 1)
+
+no_kw = [{"no": 1, "text": "封面页"}, {"no": 2, "text": "随便一点内容"}]
+check("没有导览页时退回最前面几页",
+      K.overview_pages(no_kw) == [1, 2], str(K.overview_pages(no_kw)))
+
+hl = K.page_headlines(demo_pages)
+check("页标题速览含页号与首行", "第2页:" in hl and "本讲学习目标" in hl, hl[:60])
+check("空页不出现在速览里", "第11页" not in hl)
+
+# apply_links：把收口结果套回知识点，**只接受能解析到真实 id 的依赖**
+link_kcs = [
+    {"id": "L05.1", "label": "甲", "page": 6, "points": ["a"], "deps": []},
+    {"id": "L05.2", "label": "乙", "page": 9, "points": ["b"], "deps": []},
+    {"id": "L05.3", "label": "丙", "page": 12, "points": ["c"], "deps": []},
+]
+links = {
+    "links": [
+        {"id": "L05.1", "part": "力的种类", "deps": [], "is_hub": True},
+        {"id": "L05.2", "part": "力的种类", "deps": ["L05.1"], "is_hub": False},
+        {"id": "L05.3", "part": "牛顿定律", "deps": ["L05.1", "不存在", "L05.3"], "is_hub": False},
+    ],
+    "order": ["L05.1", "L05.2", "L05.3"],
+}
+link_kcs, order = K.apply_links(link_kcs, links)
+check("归属部分被套上", link_kcs[0]["part"] == "力的种类")
+check("真实依赖被套上", link_kcs[1]["deps"] == ["L05.1"], str(link_kcs[1]["deps"]))
+check("悬空依赖被丢掉", "不存在" not in link_kcs[2]["deps"], str(link_kcs[2]["deps"]))
+check("自依赖被丢掉", "L05.3" not in link_kcs[2]["deps"])
+check("枢纽标记被套上", link_kcs[0]["is_hub"] is True)
+check("学习顺序被保留", order == ["L05.1", "L05.2", "L05.3"], str(order))
+
+# 顺序缺项要补齐（不能因为模型漏写就丢掉知识点）
+_, order2 = K.apply_links(
+    [{"id": "L05.9", "label": "x", "page": 3, "points": ["p"], "deps": []},
+     {"id": "L05.4", "label": "y", "page": 1, "points": ["p"], "deps": []}],
+    {"links": [], "order": ["L05.9"]})
+check("学习顺序补齐漏项且不重复",
+      sorted(order2) == ["L05.4", "L05.9"] and len(order2) == 2, str(order2))
+
+# put_lecture 要能存下 outline 与 order
+import copy  # noqa: E402
+_demo_data: dict = {"version": 1, "title": "", "chapters": []}
+K.put_lecture(_demo_data, "L05", "第五讲", link_kcs,
+              outline={"title": "动力学", "parts": [{"label": "力的种类"}]},
+              order=order)
+ch = K.chapters_of(_demo_data)["L05"]
+check("put_lecture 存下 outline", ch["outline"]["title"] == "动力学")
+check("put_lecture 存下 order", ch["order"] == ["L05.1", "L05.2", "L05.3"])
+check("put_lecture 覆盖同 id 章节（不重复追加）",
+      len(_demo_data["chapters"]) == 1)
+K.put_lecture(_demo_data, "L05", "第五讲v2", link_kcs)
+check("再 put 同一讲仍是 1 章且内容已更新",
+      len(_demo_data["chapters"]) == 1 and _demo_data["chapters"][0]["label"] == "第五讲v2")
+
 # ---------------------------------------------------------------- 6 真实产物
 
 data = K.load_kcs(LIB)
