@@ -80,17 +80,21 @@ def split_lines(text: str) -> list[str]:
 def norm_key(line: str) -> str:
     """把一行归一化成「页眉页脚指纹」。
 
-    三步（每一步都是踩坑踩出来的）：
+    四步（每一步都是踩坑踩出来的）：
       1. **数字替换成 #**：页脚常是「普通化学24」，页码每页都变，
          不归一化就永远匹配不上（第一版漏剥 45 处页脚的根因）。
       2. **去掉所有空白**：PPT 排版空格不稳定，「普通化学 13」与「普通化学13」
          必须视作同一条。
-      3. **掐掉首尾的 # 与分隔符**：「普通化学 2」归一化后是「普通化学#」，
-         而页首的「普通化学」是「普通化学」—— 不掐掉就仍然是两个键（GC02 的坑）。
+      3. **去掉所有标点/符号**：视觉行重建时，另一个文本框的句末「。」可能
+         恰好落在同一 y 上被并进页脚行（实测 3 页踩到：
+         `大学。物理（医学类）·第二章动力学05/57`）—— 不去标点就漏剥。
+      4. **掐掉首尾的 #**：「普通化学 2」归一化后是「普通化学#」，
+         而页首的「普通化学」是「普通化学」—— 不掐掉就仍是两个键。
     """
     s = re.sub(r"\d+", "#", line)
     s = re.sub(r"\s+", "", s)
-    return s.strip("#·.、-—()（）[]【】")
+    s = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9#]", "", s)
+    return s.strip("#")
 
 
 def detect_boilerplate(pages: list[list[str]]) -> dict[str, str]:
@@ -166,6 +170,123 @@ def strip_boilerplate(lines: list[str], boilerplate: dict[str, str],
     return keep
 
 
+# ---------------------------------------------------------------- 视觉行（按坐标重建）
+#
+# 为什么需要它（实测踩到，用户报的 bug）：
+#   PPT 导出的 PDF 里，文字是按**绘制顺序**存的，不是按视觉位置。
+#   直接按抽取顺序断行重排，会把**好几个文本框粘成一大段**。物理课第 11 页实测：
+#
+#     绳微元 dm 受力分析图推理过程对微元用牛顿第二定律微元质量趋于零得到轻绳张力处处相等
+#     𝑇𝐵 − 𝑇𝐴 = 𝑑𝑚 𝑎 𝑑𝑚 → 0 ⇒ 𝑇𝐴 = 𝑇𝐵 轻绳张力处处相等「轻绳」（质量可忽略）是一个理想模型…
+#
+#   —— 7 个文本框被接成了一句。而同一页还有图形标注碎片行：
+#     `B A F dm  A B TA TA TB TB = −  = −    点和 点的张力： ， 𝑎 → 0 ⇒ 𝑇𝐴 = 𝑇𝐵`
+#
+# 解法：用 `get_charbox` 取每个字符的坐标 → 按 y 聚类成视觉行 → 行内按 x 排序。
+# 再靠**左边界是否对齐**判断该不该把相邻两行接起来 —— 不同文本框的左边界会大跳
+# （实测第 11 页相邻行 Δx 动辄 100~700pt），同一段落的换行则基本对齐。
+
+#: 视觉行的 y 容差（pt）：字高约 20~30pt，6pt 内视为同一行
+LINE_Y_TOL = 6.0
+#: 左边界对齐容差（pt）：只有 Δx 在这么小范围内，才可能是同一段落的换行
+LEFT_TOL = 6.0
+
+
+def _charbox(tp, i: int):
+    b = tp.get_charbox(i)
+    if hasattr(b, "left"):
+        return b.left, b.bottom, b.right, b.top
+    return b[0], b[1], b[2], b[3]
+
+
+def visual_lines(page) -> list[dict]:
+    """按字符坐标重建「视觉行」。返回 [{text, x0, x1, y}]，已按阅读顺序（自上而下）排序。"""
+    tp = page.get_textpage()
+    items: list[tuple[float, float, float, float, str]] = []
+    for i in range(tp.count_chars()):
+        try:
+            ch = tp.get_text_range(i, 1)
+            x0, y0, x1, y1 = _charbox(tp, i)
+        except Exception:  # noqa: BLE001 - 个别字符取不到就跳过
+            continue
+        if ch in ("\r", "\n"):
+            continue
+        if x0 == x1 and y0 == y1:
+            continue                      # 零宽占位符
+        items.append((x0, y0, x1, y1, ch))
+
+    items.sort(key=lambda t: (-t[3], t[0]))
+    lines: list[dict] = []
+    for it in items:
+        yc = (it[1] + it[3]) / 2
+        for ln in lines:
+            if abs(ln["yc"] - yc) <= LINE_Y_TOL:
+                ln["chars"].append(it)
+                ln["yc"] = sum((c[1] + c[3]) / 2 for c in ln["chars"]) / len(ln["chars"])
+                break
+        else:
+            lines.append({"yc": yc, "chars": [it]})
+
+    out: list[dict] = []
+    for ln in lines:
+        cs = sorted(ln["chars"], key=lambda t: t[0])
+        out.append({
+            "text": "".join(c[4] for c in cs).strip(),
+            "x0": cs[0][0],
+            "x1": max(c[2] for c in cs),
+            "y": ln["yc"],
+        })
+    out.sort(key=lambda l: -l["y"])
+    return out
+
+
+def is_garbage_line(text: str) -> bool:
+    """判断视觉行是不是「碎片」——纯标点/孤立符号，没有可读内容。
+
+    实测第 11 页会产出 `，。`、`−=`、`""`、`。`、`F` 这类行：
+    它们多半是公式里的上下标或图形标注被拆散后的残渣，留在正文里纯属噪音。
+    """
+    t = re.sub(r"\s+", "", text or "")
+    if not t:
+        return True
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", t):
+        return True                       # 纯标点/符号（如 `，。`、`−=`）
+    if len(t) <= 2 and not re.search(r"[\u4e00-\u9fff]", t):
+        return True                       # 极短且无中文（如 `F`、`A B`）
+    return False
+
+
+def reflow_visual(lines: list[dict]) -> list[str]:
+    """把视觉行合并回段落。
+
+    开新段落的四种情况：
+      1. 本行以项目符号 / 编号开头
+      2. 上一行以强句末标点结尾
+      3. **左边界与上一行不对齐**（＝换了一个文本框）  ← 这一条是本次修复的关键
+      4. 没有上一行
+    """
+    paras: list[str] = []
+    prev_x0: float | None = None
+    for ln in lines:
+        text = (ln.get("text") or "").strip()
+        if is_garbage_line(text):
+            continue
+        x0 = float(ln.get("x0") or 0.0)
+        if not paras:
+            paras.append(text)
+            prev_x0 = x0
+            continue
+        prev = paras[-1]
+        aligned = prev_x0 is not None and abs(x0 - prev_x0) <= LEFT_TOL
+        if BULLET_RE.match(text) or prev.endswith(tuple(ENDS_STRONG)) or not aligned:
+            paras.append(text)
+            prev_x0 = x0
+        else:
+            sep = " " if _needs_space(prev, text) else ""
+            paras[-1] = prev + sep + text
+    return paras
+
+
 # ---------------------------------------------------------------- 断行重排
 
 def _needs_space(a: str, b: str) -> bool:
@@ -178,7 +299,7 @@ def _needs_space(a: str, b: str) -> bool:
 
 
 def reflow(lines: Iterable[str]) -> list[str]:
-    """把被 PPT 文本框切碎的行合并回段落。
+    """纯文本版本的断行重排（没有坐标时的退路）。
 
     开新段落的三种情况：
       1. 本行以项目符号 / 编号开头
@@ -214,20 +335,32 @@ def render_page_image(doc, index: int, out_path: str, scale: float = 1.6) -> Non
 
 # ---------------------------------------------------------------- 一页的组装
 
-def build_page(no: int, raw: str, boilerplate: dict[str, str]) -> dict:
-    """单页 → 账本里的一个 page 记录。"""
-    lines = split_lines(raw)
-    kept = strip_boilerplate(lines, boilerplate)
-    paras = reflow(kept)
+def build_page(no: int, vlines: list[dict], boilerplate: dict[str, str]) -> dict:
+    """单页 → 账本里的一个 page 记录。
+
+    `vlines` 是 `visual_lines()` 的产出（带坐标）。剥页眉页脚按**文字**匹配，
+    但**合并段落按坐标**（左边界对齐），这样才不会把不同文本框粘成一段。
+    """
+    raw_text = "".join((l.get("text") or "") for l in vlines)
+    keys = set(boilerplate or {})
+    kept = [l for l in vlines if norm_key(l.get("text") or "") not in keys]
+
+    # 安全阀：剥完这页就空了（而原本有内容）→ 退回过剥（封面页踩过）
+    if len("".join(l.get("text") or "" for l in kept)) < 6 <= len(raw_text):
+        kept = list(vlines)
+
+    dropped = len(vlines) - len(kept)
+    garbage = sum(1 for l in kept if is_garbage_line(l.get("text") or ""))
+    paras = reflow_visual(kept)
     text = "\n".join(paras)
     return {
         "no": no,
-        "chars_raw": len(raw.strip()),
+        "chars_raw": len(raw_text.strip()),
         "chars_clean": len(text),
         "text": text,
-        "lines_removed": len(lines) - len(kept),
+        "lines_removed": dropped + garbage,
         # 「没有文字层」和「字数很少」是两回事：封面只有几个字，但文字层是有的
-        "has_text_layer": len(raw.strip()) > 0,
+        "has_text_layer": bool(raw_text.strip()),
         "is_blank": len(text.strip()) < 3,
     }
 
@@ -238,10 +371,12 @@ def ingest(pdf_path: str, images_dir: str | None = None, scale: float = 1.6,
     doc = pdfium.PdfDocument(pdf_path)
     try:
         n = len(doc)
-        raw_pages = [doc[i].get_textpage().get_text_range() for i in range(n)]
-        per_page_lines = [split_lines(t) for t in raw_pages]
+        # 用**视觉行**（带坐标）而不是原始抽取顺序 —— 见文件上方「视觉行」一节的说明
+        vpages = [visual_lines(doc[i]) for i in range(n)]
+        per_page_lines = [[l["text"] for l in vp if not is_garbage_line(l["text"])]
+                          for vp in vpages]
         boilerplate = detect_boilerplate(per_page_lines)
-        pages = [build_page(i + 1, raw_pages[i], boilerplate) for i in range(n)]
+        pages = [build_page(i + 1, vpages[i], boilerplate) for i in range(n)]
 
         if render_images and images_dir:
             os.makedirs(images_dir, exist_ok=True)

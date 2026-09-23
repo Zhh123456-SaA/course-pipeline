@@ -128,6 +128,8 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
     kcs_data = kcs_mod.load_kcs(root)
     kcs_by_lecture = {c.get("id"): (c.get("kcs") or [])
                       for c in kcs_data.get("chapters", [])}
+    outline_by_lecture = {c.get("id"): (c.get("outline") or {})
+                          for c in kcs_data.get("chapters", [])}
 
     for stem in sorted(sources["sources"]):
         data = led.load_pages(stem)
@@ -143,7 +145,8 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         lec_kcs = kcs_by_lecture.get(stem) or []
         body = render.render_lecture_body(course, data, include_images=images,
                                           annotations_by_page=ann_by_page,
-                                          kcs=lec_kcs)
+                                          kcs=lec_kcs,
+                                          outline=outline_by_lecture.get(stem))
         note_name = f"{stem}.md"
         title = stem
         if data.get("running_head"):
@@ -370,14 +373,15 @@ def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
             continue
         anns = archive.annotations_for_lecture(arch, stem)
         label = pages_data.get("running_head") or stem
-        found, rep = kcs_mod.extract_lecture(root, stem, label,
-                                             pages_data["pages"], anns,
-                                             window=window)
+        found, outline, rep = kcs_mod.extract_lecture(root, stem, label,
+                                                      pages_data["pages"], anns,
+                                                      window=window)
         report += rep
         n = kcs_mod.link_questions(found, anns)
         if n:
             report.append(f"[link ] {stem}：{n} 条追问挂到了知识点上")
-        kcs_mod.put_lecture(data, stem, label, found)
+        order = [k["id"] for k in sorted(found, key=lambda x: (x.get("page") or 0, x["id"]))]
+        kcs_mod.put_lecture(data, stem, label, found, outline=outline, order=order)
 
     kcs_mod.save_kcs(root, data)
     total = sum(len(c.get("kcs") or []) for c in data["chapters"])
@@ -467,10 +471,11 @@ def main(argv: list[str] | None = None) -> int:
                             images=not args.no_images, scale=args.scale)
     if args.action in ("archive", "all"):
         lines += cmd_archive(args.course, args.ann_root)
-    if args.action in ("kcs", "all"):
+    if args.action == "kcs":
         lines += cmd_kcs(args.course, window=args.window, ai=not args.no_ai)
-    if args.action in ("cards", "all"):
-        lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild, ai=not args.no_ai, prune=args.prune)
+    if args.action in ("cards",):
+        lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild,
+                           ai=not args.no_ai, prune=args.prune)
     if args.action in ("render", "all"):
         lines += cmd_render(args.course, images=not args.no_images)
     if args.action == "check":

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -132,16 +133,38 @@ os.remove(no_marker)
 
 # ---------------------------------------------------------------- 6 账本可重建
 
+# 比什么：**生成块**是否可完全重建。
+# 不比什么：批注槽里的内容 —— 那是用户写的，住在文件里、不在账本里，
+# 删掉 notes/ 后本来就该丢。早先版本直接比整个文件，只要有手写批注就必然失败
+# （实测：test_annotation 被超时打断留下残留，把这里带红）。
+GEN_RE = re.compile(r"<!-- gen:begin -->(.*?)<!-- gen:end -->", re.S)
+ANN_RE = re.compile(r"(<!-- 批注区 p\d+ 开始[^>]*-->)(.*?)(<!-- 批注区 p\d+ 结束 -->)", re.S)
+
+
+def generated(view: str) -> str:
+    m = GEN_RE.search(view)
+    if not m:
+        return ""
+    # 把批注槽的内容抹掉再比：只比"程序生成的那部分"
+    return ANN_RE.sub(lambda mm: mm.group(1) + mm.group(3), m.group(1))
+
+
+with open(note, "r", encoding="utf-8") as f:
+    before_view = f.read()
+
 shutil.rmtree(os.path.join(LIB, "notes"), ignore_errors=True)
 shutil.rmtree(os.path.join(LIB, "assets"), ignore_errors=True)
 run("--course", COURSE, "render")
 rebuilt_notes = os.path.isdir(os.path.join(LIB, "notes"))
 check("删掉 notes/ 后能从账本重建笔记", rebuilt_notes)
 run("--course", COURSE, "all")
-snap4 = snapshot(LIB)
-check("重建后与原始快照一致（笔记部分）",
-      all(snap4.get(k) == snap1.get(k) for k in snap1 if k.startswith("notes")),
-      str([k for k in snap1 if k.startswith("notes") and snap4.get(k) != snap1[k]][:3]))
+with open(note, "r", encoding="utf-8") as f:
+    after_view = f.read()
+check("重建后生成块与原来完全一致（可从账本无损重建）",
+      generated(before_view) == generated(after_view),
+      f"gen 长度 {len(generated(before_view))} vs {len(generated(after_view))}")
+check("批注槽仍然存在（结构没丢）",
+      f"批注区 p1 开始" in after_view and f"批注区 p1 结束" in after_view)
 
 # ---------------------------------------------------------------- 汇总
 

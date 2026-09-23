@@ -88,6 +88,22 @@ patched = re.sub(
     r"[ \t]*<!-- 批注区 p4 开始[^>]*-->.*?<!-- 批注区 p4 结束 -->",
     lambda _m: my_block, original, count=1, flags=re.S)
 check("测试前置：批注已写入第 4 页", MY_NOTE in patched)
+
+# 还原钩子：**必须保证被打断（超时/崩溃/Ctrl+C）也会还原**。
+# 踩过：上一次跑被超时杀掉，残留的测试批注把 s1_idempotent 的「重建一致」断言带红。
+import atexit  # noqa: E402
+
+
+def _restore() -> None:
+    try:
+        with open(NOTE, "w", encoding="utf-8", newline="\n") as f:
+            f.write(original)
+    except OSError:
+        pass
+
+
+atexit.register(_restore)
+
 with open(NOTE, "w", encoding="utf-8", newline="\n") as f:
     f.write(patched)
 
