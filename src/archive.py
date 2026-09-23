@@ -146,10 +146,12 @@ def build_archive(library_root: str, ann_roots: Iterable[str],
 
     by_sha: dict[str, dict] = {}
     foreign: list[str] = []
+    scanned = 0
     for sha, d in sorted(ann_dirs.items()):
         anns = load_annotations(d)
         if not anns:
             continue
+        scanned += 1
         src_path = src_index.get(sha)
         lec = lecture_by_sha.get(sha)
         if match_only and not lec:
@@ -172,7 +174,12 @@ def build_archive(library_root: str, ann_roots: Iterable[str],
                       + ("…" if len(foreign) > 5 else "")
                       + "。把对应素材放进 source/ 再跑本命令即可接管。")
 
-    data = {"version": 1, "by_sha1": by_sha}
+    # `scanned` 让调用方能区分两种「空」：
+    #   ① 压根没扫到任何批注源 → 可能是源目录被清了，**不能动账本**；
+    #   ② 扫到了，但全不属于本课程 → 应当**用空结果覆盖**，把历史串门数据清掉。
+    #      （实测：普通化学的账本里躺着物理/生物/另一门课的 4 组批注，
+    #        lecture_id 为空，既渲染不出来又是脏数据。早先只会早退，永远清不掉。）
+    data = {"version": 1, "by_sha1": by_sha, "scanned": scanned}
     return data, report
 
 

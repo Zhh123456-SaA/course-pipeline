@@ -16,8 +16,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import _pick  # noqa: E402
+
 COURSE = "生物"
-LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", COURSE))
+LIB = os.path.join(_pick.library_root(PROJ), COURSE)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")

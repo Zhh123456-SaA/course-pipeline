@@ -37,7 +37,7 @@ import _pick  # noqa: E402
 #   现在：① 只把来源课程当**只读素材**；② 复制一份到临时沙箱库；
 #        ③ 全部操作走 COURSE_LIB 指向沙箱；④ 跑完（含异常退出）删掉沙箱。
 SRC_COURSE = "普通化学"
-REAL_LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库"))
+REAL_LIB = _pick.library_root(PROJ)
 SANDBOX = os.path.abspath(os.path.join(
     tempfile.gettempdir(), "course-pipeline-selftest", os.getpid().__str__()))
 _picked = _pick.pick(PROJ, prefer=SRC_COURSE)

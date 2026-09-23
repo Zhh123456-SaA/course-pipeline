@@ -31,13 +31,21 @@ course-pipeline/          程序（代码）
   src/                    源码
   tests/                  测试
   run.py                  命令行入口
+  library.path            本机配置：学习库在哪（不入库）
 
-..\学习库\<课程名>\        数据（Obsidian 库）
+<学习库>\<课程名>\          数据（Obsidian 库）
   source/                 用户放的原始素材（只读）
-  .ledger/                账本（Obsidian 默认忽略点开头目录）
+  .ledger/                账本（唯一真相源；Obsidian 默认忽略点开头目录）
   assets/                 从素材抽出的图片
   notes/                  生成的笔记
+  cards/                  Anki 卡片导出
 ```
+
+**库的位置不要写死。** 一律走 `src/libroot.py` 解析：
+环境变量 `COURSE_LIB` → 程序目录下的 `library.path` → 兜底 `<程序目录>\..\学习库`。
+本机当前是 `D:\学习库`（独立目录，不放在开发工作区里面）。
+测试侧用 `tests/_pick.py` 的 `library_root()`，它直接复用同一个 `libroot`，
+**不要自己拼相对路径** —— 两处各写一份必然漂移，测试就会看错库。
 
 ## 运行方式
 

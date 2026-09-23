@@ -136,7 +136,7 @@ Obsidian 的**图谱视图只认 `[[双链]]`** —— 知识点如果只是一�
 
 首次生成，之后**只在不存在时写入** —— 你可以随便改。内容含：三类内容各是谁的地盘、每天五步流程、记笔记三条经验、标签约定、常用命令。
 
-**实测**：131 道自测题 + 56 篇知识点原子笔记；全套测试 **235 项全绿**。
+**实测**：生物课 155 道自测题 + 66 篇知识点原子笔记；全套测试 **296 项全绿**。
 测试里专门有一条「**所有 `[[双链]]` 都必须能解析**」—— 实测踩过一次断链
 （回到讲次的链接用了导览标题，而讲次笔记的文件名是讲次 id）。
 
@@ -216,15 +216,28 @@ python run.py --course 物理 all                                   # ingest →
 # 1. 建依赖库（只需一次；不出网环境的镜像可用 PIP_MIRROR 覆盖）
 python scripts\setup_vendor.py
 
-# 2. 把讲义 PDF 放进学习库的 source\ 目录
-#    ..\学习库\<课程名>\source\*.pdf
+# 2.（可选）告诉程序你的学习库在哪。默认是 ..\学习库；
+#     一行命令改写，之后一直生效，不用每次设环境变量。
+python -c "import sys;sys.path.insert(0,'src');import libroot;print(libroot.write_config('.', r'D:\学习库'))"
 
-# 3. 摄取 → 生成笔记
-python run.py --course 普通化学 all
+# 3. 把讲义放进去：<学习库>\<课程名>\source\  （PDF / PPTX / DOCX 都认）
+#    例如 D:\学习库\生物\source\第3章-细胞膜与表面.pptx
 
-# 4. 体检（账本 / 图片 / 笔记 三者是否一致）
-python run.py --course 普通化学 check
+# 4. 摄取 → 归档 → 生成笔记
+python run.py --course 生物 all
+
+# 5. 体检（账本 / 图片 / 笔记 三者是否一致）
+python run.py --course 生物 check
 ```
+
+**学习库放在哪**由 `src/libroot.py` 统一解析，优先级：
+
+1. 环境变量 `COURSE_LIB`（测试用它把产物导进临时沙箱）
+2. 程序目录下的 **`library.path`**（本机配置，不入库）—— 推荐用这个
+3. 兜底 `<程序目录>\..\学习库`
+
+> 为什么要有这个：库的位置是**用户的决定**。写死相对路径的结果是
+> 讲义和 Obsidian 笔记被放在**插件开发工作区内部** —— 位置本身就摆错了。
 
 其他命令：
 
@@ -240,16 +253,34 @@ python run.py --course <课程名> all --force      # 忽略缓存强制重算
 ## 测试
 
 ```powershell
-python tests\s1_idempotent.py    # 幂等 + 手写内容保护 + 账本可重建
-python tests\test_boilerplate.py # 页眉页脚剥离 + 图片链接合法性
-python tests\test_annotation.py  # 每页批注位 + 重渲染后批注不丢
-python tests\test_archive.py     # 归档通道：sha1 匹配 + 落账本 + 渲染 + 幂等
-python tests\test_cards.py       # 卡片身份稳定 + 不重复推送 + 中英字段映射 + AI 出题闸门
-python tests\test_kcs.py         # 知识点骨架：schema 复用 + id 稳定 + 闸门 + 追问挂载
+python tests\test_libroot.py       # 学习库在哪：env / 配置文件 / 兜底 三档优先级
+python tests\s1_idempotent.py      # 幂等 + 手写内容保护 + 账本可重建
+python tests\test_boilerplate.py   # 页眉页脚剥离 + 图片链接合法性
+python tests\test_annotation.py    # 每页批注位 + 重渲染后批注不丢
+python tests\test_archive.py       # 归档通道：sha1 匹配 + 落账本 + 渲染 + 幂等
+python tests\test_archive_prune.py # 归档清理：串门脏数据能清、没数据源时不许动账本
+python tests\test_cards.py         # 卡片身份稳定 + 不重复推送 + 中英字段映射 + AI 出题闸门
+python tests\test_kcs.py           # 知识点骨架：schema 复用 + id 稳定 + 闸门 + 追问挂载
+python tests\test_office.py        # PPTX/DOCX 摄取：分派 + 页图落盘 + 归档按课程隔离
 ```
 
-**六条都必须全绿才算通过**（当前 **194 项**）。测试**不需要联网、不需要 API Key**；
+**九条都必须全绿才算通过**（当前 **296 项**）。测试**不需要联网、不需要 API Key**；
 `test_archive.py` / `test_cards.py` 在数据源或 Anki 不可用时会自动跳过对应段落（不算失败）。
+
+### 测试不许动你的真实数据
+
+`s1_idempotent.py` / `test_annotation.py` / `test_archive_prune.py` 会**复制一份到临时沙箱库**
+（通过环境变量 `COURSE_LIB` 指向），跑完自动删掉。真实课程的账本与素材全程只读 ——
+`s1_idempotent` 里有一条硬断言盯着这件事。
+
+> 为什么：这两个测试原来直接对着真实的 `学习库\<课程>` 跑，`s1_idempotent` 还会
+> `rmtree` 掉它的 `notes/` 与 `assets/`。虽然那两个目录可重建，但「测试去删用户数据」
+> 本身就是设计错误 —— 哪天清理逻辑写错一格，删掉的就不是可重建的东西了。
+
+课程名也不再写死（`tests/_pick.py` 自动挑一门「素材 + 账本 + 笔记」齐全的课）。
+写死的后果实测过：`普通化学` 目录一消失，一批测试集体退出码 2，
+`test_boilerplate` 的 7 条真实产物回归则**静默跳过** —— 回归悄悄失效比报错更危险。
+
 
 ## 目录
 
@@ -258,23 +289,30 @@ course-pipeline/          程序
 ├── run.py                命令行入口
 ├── src/
 │   ├── ledger.py         账本读写（稳定序列化 + 原子写 + 内容指纹）
+│   ├── libroot.py        学习库在哪（env / library.path / 兜底）
 │   ├── pdf_source.py     讲义提取（页眉页脚剥离 / 断行重排 / 页图渲染）
-│   ├── archive.py        归档通道（ppt-deepreader 批注 → 账本）
+│   ├── source_ingest.py  摄取分派（PDF → pdf_source；PPTX/DOCX → 复用真源抽取器）
+│   ├── archive.py        归档通道（ppt-deepreader 批注 → 账本，按课程隔离）
 │   ├── cards.py          Anki 卡片（身份稳定 + AnkiConnect 客户端）
 │   ├── engine.py         共享引擎（复用真源 deepreader 的 Settings + LLMClient）
 │   ├── qa.py             AI 出题（从解答反推题目）
 │   ├── kcs.py            知识点骨架（讲义页 + 追问 → KC）
 │   └── render.py         账本 → Obsidian 笔记（生成块 + 每页批注位）
 ├── scripts/setup_vendor.py  建依赖库
-├── tests/                五个测试入口
+├── tests/                九个测试入口（+ _pick.py 自动挑课程）
+├── library.path          本机配置：学习库在哪（不入库）
 └── vendor/               自带的第三方库（脚本生成，不入库）
 
-..\学习库\<课程名>\        数据（Obsidian 库）
-├── source/               原始素材（程序只读，永不修改）
+<学习库>\<课程名>\          数据（Obsidian 库）
+├── source/               讲义原件（程序只读，永不修改）
 ├── .ledger/              账本（唯一真相源）
 ├── assets/               从素材抽出的页图
-└── notes/                生成的笔记
+├── notes/                Obsidian 笔记
+└── cards/                Anki 卡片导出（anki_import.tsv）
 ```
+
+库根目录默认是 `..\学习库`，用 `library.path` 或环境变量 **`COURSE_LIB`** 覆盖
+（测试就是靠后者把产物导进临时沙箱，绝不碰你的真实数据）。
 
 ## 三条铁律
 

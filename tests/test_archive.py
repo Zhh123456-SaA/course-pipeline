@@ -29,8 +29,11 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import _pick  # noqa: E402
+
 COURSE = "物理"
-LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", COURSE))
+LIB = os.path.join(_pick.library_root(PROJ), COURSE)
 NOTE = os.path.join(LIB, "notes", "05第五讲-动力学1_2026.md")
 ANN_ROOTS = [r"D:\1\ppt-deepreader\.pdw_work"]
 

@@ -28,8 +28,11 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import _pick  # noqa: E402
+
 COURSE = "物理"
-LIB = os.path.abspath(os.path.join(PROJ, "..", "学习库", COURSE))
+LIB = os.path.join(_pick.library_root(PROJ), COURSE)
 
 sys.path.insert(0, os.path.join(PROJ, "vendor"))
 sys.path.insert(0, os.path.join(PROJ, "src"))

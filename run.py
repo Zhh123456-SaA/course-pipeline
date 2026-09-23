@@ -34,23 +34,25 @@ import archive  # noqa: E402
 import cards as cards_mod  # noqa: E402
 import engine  # noqa: E402
 import kcs as kcs_mod  # noqa: E402
+import libroot  # noqa: E402
 import pdf_source  # noqa: E402
 import source_ingest  # noqa: E402
 import qa  # noqa: E402
 import render  # noqa: E402
 
-LIBRARY_ROOT = os.path.abspath(os.path.join(HERE, "..", "学习库"))
-
-
 def library_root() -> str:
-    """知识库根目录。可用环境变量 COURSE_LIB 覆盖。
+    """学习库（讲义 + Obsidian 笔记 + Anki 账本）的根目录。
 
-    ★ 为什么要能覆盖：自测必须能在**一次性的沙箱库**里跑，
-    绝不允许把真实课程当测试床（真实事故：s1_idempotent 直接对着
-    用户真实的 学习库\\普通化学 跑，还 rmtree 掉它的 notes/ 与 assets/）。
-    另外这也方便把库放到别处（比如同步盘）。
+    解析优先级见 `src/libroot.py`：环境变量 `COURSE_LIB` → 程序目录下的
+    `library.path` → 兜底 `../学习库`。
+
+    ★ 两条来由：
+    ① 自测必须能跑在**一次性沙箱库**里，绝不允许把真实课程当测试床
+       （真实事故：s1_idempotent 直接对着用户真实课程跑，还 rmtree 它的 notes/）；
+    ② 库的位置是用户的决定。写死相对路径的结果是把讲义和 Obsidian 笔记
+       塞在**插件开发工作区内部** —— 位置本身就摆错了。
     """
-    return os.path.abspath(os.environ.get("COURSE_LIB") or LIBRARY_ROOT)
+    return libroot.resolve(HERE)
 
 
 def course_root(course: str) -> str:
@@ -264,8 +266,11 @@ def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
     roots = ann_roots or archive.DEFAULT_ANN_ROOTS
 
     data, report = archive.build_archive(root, roots)
-    if not data["by_sha1"]:
-        report.append(f"[warn] 在 {roots} 下没找到任何批注（annotations.json）")
+    if not data.get("scanned"):
+        # 一组批注源都没扫到：可能是源目录被清空/挪走，此时**不能动账本**，
+        # 否则会把你辛苦攒的批注一锅端掉。
+        report.append(f"[warn] 在 {roots} 下没找到任何批注（annotations.json），"
+                      f"账本保持原样（不删不改）")
         return report
 
     slug_by_lecture = {stem: (rec.get("slug") or pdf_source.slugify(stem))
@@ -274,8 +279,9 @@ def cmd_archive(course: str, ann_roots: list[str] | None = None) -> list[str]:
     archive.save_archive(root, data)
 
     matched = sum(1 for r in data["by_sha1"].values() if r.get("lecture_id"))
-    report.append(f"[done ] {len(data['by_sha1'])} 组批注入账，"
-                  f"其中 {matched} 组匹配到学习库讲次；复制裁剪图 {n_crop} 张")
+    report.append(f"[done ] 扫到 {data['scanned']} 组批注；"
+                  f"{len(data['by_sha1'])} 组属于本课程已入账"
+                  f"（其中 {matched} 组匹配到讲次）；复制裁剪图 {n_crop} 张")
     return report
 
 

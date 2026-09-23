@@ -12,15 +12,21 @@ s1_idempotent / test_annotation 直接退出码 2，全量回归跑不完整。
 from __future__ import annotations
 
 import os
+import sys
 
 #: 优先顺序 —— 这些课在就优先用（结果稳定，日志好对比）
 PREFERRED = ("普通化学", "物理", "生物")
 
 
 def library_root(proj: str) -> str:
-    """知识库根目录（与 run.py 的 course_root 同一套规则）。"""
-    return os.path.abspath(os.environ.get("COURSE_LIB")
-                           or os.path.join(proj, "..", "学习库"))
+    """学习库根目录 —— 与 run.py **同一套解析规则**（见 src/libroot.py）。
+
+    这里不再自己拼路径：两处各写一份必然漂移，而"测试看的库"和"程序写的库"
+    一旦不是同一个，测试就废了。
+    """
+    sys.path.insert(0, os.path.join(proj, "src"))
+    import libroot
+    return libroot.resolve(proj)
 
 
 def _ready(root: str, course: str) -> str | None:
