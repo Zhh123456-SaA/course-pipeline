@@ -230,18 +230,7 @@ def extract_outline(pages_by_no: dict[int, dict], nos: list[int],
 
 def extract_links(outline: dict, kcs: list[dict]) -> tuple[dict, dict]:
     """收口：把全部知识点串起来 —— 归属部分 + 直接前置依赖 + 枢纽判定 + 学习顺序。"""
-    lines: list[str] = []
-    for k in kcs:
-        first_point = (k.get("points") or [""])[0][:60]
-        lines.append(f"{k['id']} | {k['label']} | 第{k.get('page')}页 | {first_point}")
-    parts = "、".join(p["label"] for p in (outline.get("parts") or [])) or "（未提取到结构）"
-    obj_txt = "；".join(outline.get("objectives") or []) or "（课件没写明确目标）"
-
-    user = (f"【本讲标题】{outline.get('title') or '（未知）'}\n"
-            f"【课件写明的学习目标】{obj_txt}\n"
-            f"【本讲结构】{parts}\n\n"
-            f"【全部知识点】（id | 名称 | 出处页 | 首条要点）\n" + "\n".join(lines)
-            + "\n\n请输出 JSON。")
+    user = links_payload(outline, kcs)
     got, meta = engine.chat_json(LINK_SYSTEM, user, max_tokens=12000)
     return (got if isinstance(got, dict) else {}), meta
 
@@ -489,6 +478,25 @@ def _window_key(text: str, questions: str, known: list[str], model: str,
                          "outline": outline or {}})
 
 
+def links_payload(outline: dict, kcs: list[dict]) -> str:
+    """串联这一步真正喂给模型的那段话 —— 缓存键就直接哈希它。
+
+    这样"键是否过期"不再靠人肉判断：**只要模型看到的东西变了，键必然变**。
+    """
+    lines: list[str] = []
+    for k in kcs:
+        first_point = (k.get("points") or [""])[0][:60]
+        lines.append(f"{k['id']} | {k['label']} | 第{k.get('page')}页 | {first_point}")
+    parts = "、".join(p["label"] for p in (outline.get("parts") or [])) or "（未提取到结构）"
+    obj_txt = "；".join(outline.get("objectives") or []) or "（课件没写明确目标）"
+
+    return (f"【本讲标题】{outline.get('title') or '（未知）'}\n"
+            f"【课件写明的学习目标】{obj_txt}\n"
+            f"【本讲结构】{parts}\n\n"
+            f"【全部知识点】（id | 名称 | 出处页 | 首条要点）\n" + "\n".join(lines)
+            + "\n\n请输出 JSON。")
+
+
 def outline_cache_key(lecture_id: str, ov_nos: list[int], ov_text: str) -> str:
     """讲次结构的缓存键 —— **内容寻址**。
 
@@ -498,6 +506,19 @@ def outline_cache_key(lecture_id: str, ov_nos: list[int], ov_text: str) -> str:
     """
     h = content_hash({"v": KC_PROMPT_VERSION, "nos": list(ov_nos), "text": ov_text})
     return f"outline:{lecture_id}:{h[:16]}"
+
+
+def links_cache_key(lecture_id: str, outline: dict, kcs: list[dict], model: str) -> str:
+    """串联的缓存键 —— 同样内容寻址。
+
+    ★ 回归（真实事故）：这一处比结构那处更隐蔽。键原来只写 `links:{讲次}`，
+    于是导览修好后重跑，66 个知识点用的是**上一版 68 个知识点 + 旧结构**
+    算出来的归属与依赖，对不上的 id 被 apply_links 静默丢弃 ——
+    表面对，里子是旧的。键必须哈希「模型实际看到的那段话」。
+    """
+    h = content_hash({"v": KC_PROMPT_VERSION, "model": model,
+                      "payload": links_payload(outline, kcs)})
+    return f"links:{lecture_id}:{h[:16]}"
 
 
 def _load_cache(library_root: str) -> dict:
@@ -637,7 +658,7 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
     # ---- ③ 收口串联：修正依赖、判定枢纽、给学习顺序 ----
     order: list[str] = []
     if all_kcs and outline:
-        lkey = f"links:{lecture_id}"
+        lkey = links_cache_key(lecture_id, outline, all_kcs, model)
         if use_cache and lkey in cache.get("by_key", {}):
             links = cache["by_key"][lkey]["links"]
             report.append(f"[link ] {lecture_id}：串联命中缓存")

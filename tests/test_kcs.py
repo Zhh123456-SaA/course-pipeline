@@ -227,6 +227,33 @@ check("结构缓存键随导览页号集合变",
 check("  同内容同讲次 → 键稳定（缓存还能命中）",
       k_a == K.outline_cache_key("05第五讲", [2], "目录：第一节、第二节"))
 
+# ★ 回归（真实事故，比上面那处更隐蔽）：串联的缓存键也只写讲次名，
+#   于是导览修好后重跑，知识点用的是**上一版知识点集合 + 旧结构**算出来的
+#   归属与依赖，对不上的 id 被 apply_links 静默丢掉 —— 表面对，里子是旧的。
+_ov = {"title": "第三章 细胞膜与表面", "objectives": ["掌握流动镶嵌模型"],
+       "parts": [{"label": "细胞膜的组成", "from": 3, "to": 20, "summary": "膜的成分"}]}
+_ks = [{"id": "L03.1", "label": "脂双层", "page": 4, "points": ["双亲性"]},
+       {"id": "L03.2", "label": "膜蛋白", "page": 9, "points": ["镶嵌"]}]
+_lk = K.links_cache_key("第3章", _ov, _ks, "m1")
+check("串联缓存键含全部知识点（少一个就变）",
+      _lk != K.links_cache_key("第3章", _ov, _ks[:1], "m1"))
+check("串联缓存键随结构（parts）变",
+      _lk != K.links_cache_key(
+          "第3章", {**_ov, "parts": [{"label": "别的部分", "from": 1, "to": 2,
+                                     "summary": "x"}]}, _ks, "m1"))
+check("串联缓存键随学习目标变",
+      _lk != K.links_cache_key("第3章", {**_ov, "objectives": ["别的目标"]}, _ks, "m1"))
+check("串联缓存键随要点内容变",
+      _lk != K.links_cache_key(
+          "第3章", _ov, [{**_ks[0], "points": ["换了内容"]}, _ks[1]], "m1"))
+check("串联缓存键随模型变", _lk != K.links_cache_key("第3章", _ov, _ks, "m2"))
+check("  同内容同模型 → 键稳定（缓存还能命中）",
+      _lk == K.links_cache_key("第3章", _ov, _ks, "m1"))
+check("串联缓存键喂的就是模型看到的那段话",
+      "细胞膜的组成" in K.links_payload(_ov, _ks)
+      and "L03.1 | 脂双层" in K.links_payload(_ov, _ks)
+      and "双亲性" in K.links_payload(_ov, _ks))
+
 hl = K.page_headlines(demo_pages)
 check("页标题速览含页号与首行", "第2页:" in hl and "本讲学习目标" in hl, hl[:60])
 check("空页不出现在速览里", "第11页" not in hl)
