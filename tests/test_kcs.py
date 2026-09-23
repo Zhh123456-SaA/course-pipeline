@@ -201,6 +201,32 @@ no_kw = [{"no": 1, "text": "封面页"}, {"no": 2, "text": "随便一点内容"}
 check("没有导览页时退回最前面几页",
       K.overview_pages(no_kw) == [1, 2], str(K.overview_pages(no_kw)))
 
+# ★ 回归（真实事故）：132 页的生物课件，目录页写的是「目   录」（中间全角空格），
+#   关键词匹配不到 → 导览只剩最后一页的「本章小节」，第一节~第四节的结构全丢了。
+#   判定前必须先去掉空白。
+spaced = [
+    {"no": 1, "text": "封面"},
+    {"no": 2, "text": "第一节 细胞膜\n第二节 物质的跨膜运输\n目   录"},
+    {"no": 9, "text": "细胞膜的组成"},
+]
+check("「目   录」带空格也认得出（全角空格回归）",
+      K.overview_pages(spaced) == [2], str(K.overview_pages(spaced)))
+check("  普通「目录」照样认得出",
+      K.overview_pages([{"no": 1, "text": "目录"}]) == [1])
+check("  换行/制表符夹在关键词里也认得出",
+      K.overview_pages([{"no": 3, "text": "本\t章\n内 容"}]) == [3])
+
+# ★ 回归（真实事故）：结构缓存的键原来只写讲次名，不含内容指纹 ——
+#   修好了导览页判定，重跑却端出旧结构。键必须随内容变。
+k_a = K.outline_cache_key("05第五讲", [2], "目录：第一节、第二节")
+check("结构缓存键随讲次变", k_a != K.outline_cache_key("06第六讲", [2], "目录：第一节、第二节"))
+check("结构缓存键随导览页正文变",
+      k_a != K.outline_cache_key("05第五讲", [2], "目录：第一节、第二节、第三节"))
+check("结构缓存键随导览页号集合变",
+      k_a != K.outline_cache_key("05第五讲", [2, 131], "目录：第一节、第二节"))
+check("  同内容同讲次 → 键稳定（缓存还能命中）",
+      k_a == K.outline_cache_key("05第五讲", [2], "目录：第一节、第二节"))
+
 hl = K.page_headlines(demo_pages)
 check("页标题速览含页号与首行", "第2页:" in hl and "本讲学习目标" in hl, hl[:60])
 check("空页不出现在速览里", "第11页" not in hl)

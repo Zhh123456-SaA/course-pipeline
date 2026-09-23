@@ -176,8 +176,10 @@ def overview_pages(pages: list[dict], limit: int = 6) -> list[int]:
 
     命中关键词的优先；一个都没命中就退回最前面几页（很多课件把目标写在开头）。
     """
+    # 匹配前先去掉全部空白：课件里「目 录」常带全角空格，不归一化就漏掉。
+    # 实测教训：132 页的生物课件只认出了第 131 页的小结，真正的目录（第 2 页）被漏掉。
     hits = [int(p["no"]) for p in pages
-            if _OVERVIEW_RE.search(p.get("text") or "")]
+            if _OVERVIEW_RE.search(re.sub(r"\s+", "", p.get("text") or ""))]
     if not hits:
         hits = [int(p["no"]) for p in sorted(pages, key=lambda x: x["no"])[:3]]
     return sorted(set(hits))[:limit]
@@ -487,6 +489,17 @@ def _window_key(text: str, questions: str, known: list[str], model: str,
                          "outline": outline or {}})
 
 
+def outline_cache_key(lecture_id: str, ov_nos: list[int], ov_text: str) -> str:
+    """讲次结构的缓存键 —— **内容寻址**。
+
+    ★ 回归（真实事故）：原来键只写 `outline:{讲次}`，不含内容指纹。
+    于是修好「导览页判定」后重跑，程序照样端出旧结构 —— 改了等于没改。
+    现在导览页的**页号集合或正文**一变，键就变，必然重算。
+    """
+    h = content_hash({"v": KC_PROMPT_VERSION, "nos": list(ov_nos), "text": ov_text})
+    return f"outline:{lecture_id}:{h[:16]}"
+
+
 def _load_cache(library_root: str) -> dict:
     return load_json(cache_path(library_root), None) or {"version": 1, "by_key": {}}
 
@@ -553,15 +566,19 @@ def extract_lecture(library_root: str, lecture_id: str, lecture_label: str,
 
     # ---- ① 讲次结构 ----
     ov_nos = overview_pages(pages)
+    # 缓存键必须**内容寻址**：导览页变了（换课件/改判定规则）就得重算，
+    # 否则改了规则却吃旧缓存 = 改了等于没改（实测踩过）。
+    ov_key = outline_cache_key(
+        lecture_id, ov_nos,
+        outline_text(pages_by_no, ov_nos) + page_headlines(pages))
     outline: dict = {}
-    if use_cache and f"outline:{lecture_id}" in cache.get("by_key", {}):
-        outline = cache["by_key"][f"outline:{lecture_id}"]["outline"]
+    if use_cache and ov_key in cache.get("by_key", {}):
+        outline = cache["by_key"][ov_key]["outline"]
         report.append(f"[outline] {lecture_id}：结构命中缓存")
     else:
         try:
             outline, meta = extract_outline(pages_by_no, ov_nos, pages)
-            cache.setdefault("by_key", {})[f"outline:{lecture_id}"] = {"outline": outline,
-                                                                      "meta": meta}
+            cache.setdefault("by_key", {})[ov_key] = {"outline": outline, "meta": meta}
             parts = outline.get("parts") or []
             report.append(f"[outline] {lecture_id}：读了第 {'、'.join(map(str, ov_nos))} 页"
                           f" → 「{outline.get('title', '')}」分 {len(parts)} 部分"
