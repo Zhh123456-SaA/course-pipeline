@@ -345,6 +345,17 @@ def merge_cards(library_root: str, new_cards: list[dict]) -> tuple[dict, list[st
     return data, report
 
 
+def remembered_notetype(data: dict) -> str:
+    """账本里记住的上次同步实际用的笔记类型；没记过返回 ""。
+
+    为什么需要：`export_tsv` 的 `#notetype` 必须与目标 Anki 里真实存在的
+    类型一致。中文版 Anki 没有 `Basic`（叫「问答题」），Anki 没开的时候
+    探不到 —— 但「上次同步成功用的是哪个类型」这件事账本知道，不该丢。
+    """
+    v = data.get("notetype")
+    return v if isinstance(v, str) and v.strip() else ""
+
+
 def export_tsv(cards: list[dict], path: str, notetype: str = "Basic",
                deck: str = "课程") -> None:
     """导出成 Anki 可直接导入的文本（制表符分隔）。
@@ -558,6 +569,11 @@ def sync_to_anki(library_root: str, cards: list[dict], model: str | None = None,
     data = load_cards(library_root)
     by_id = data["by_id"]
 
+    # 记住这次实际用的笔记类型。Anki 不开时导出的 TSV 全靠它 ——
+    # 否则中文版用户只能拿到 `Basic`（中文 Anki 里根本没这个类型，导入会踩坑）。
+    notetype_changed = data.get("notetype") != use_model
+    data["notetype"] = use_model
+
     # 分三堆：新卡（推）、内容变了的旧卡（更新）、没变的（跳过）
     to_add: list[dict] = []
     to_update: list[dict] = []
@@ -571,6 +587,8 @@ def sync_to_anki(library_root: str, cards: list[dict], model: str | None = None,
             to_update.append(c)
 
     if not to_add and not to_update:
+        if notetype_changed:
+            save_cards(library_root, data)   # 没啥可推，但类型得留下
         report.append("[anki ] 没有新卡、也没有内容变化（都已同步过）")
         return report
 

@@ -373,14 +373,27 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
                       + "、".join(f"{s['page']}页" for s in all_skipped[:6]))
 
     # 探测目标 Anki 的笔记类型：中文版没有 Basic 这个名字（叫「问答题」），
-    # 表头写错会导致导入失败或建出错误的类型。探测不到才退回 Basic。
-    notetype = "Basic"
+    # 表头写错会导致导入失败或建出错误的类型。
+    # 探测顺序：① 问 AnkiConnect（最准）→ ② 账本里记住的上次同步用的类型
+    # → ③ 退回 Basic 并**明确告警**。
+    #
+    # ★ 为什么要第 ② 步：Anki 不开的时候（离线导 TSV 是常见用法）原来一律退回
+    #   Basic，中文版用户拿去导入就踩坑 —— 明明上次同步成功用的就是「问答题」，
+    #   这个事实不该丢。
+    notetype = cards_mod.remembered_notetype(data)
+    src = "账本记住的" if notetype else ""
     ac = cards_mod.AnkiConnect()
     if ac.available():
         picked, _fmap = ac.pick_basic_model()
         if picked:
-            notetype = picked
-            report.append(f"[anki ] 探测到笔记类型：**{notetype}**")
+            notetype, src = picked, "从 Anki 探测到的"
+    if notetype:
+        report.append(f"[anki ] 笔记类型：**{notetype}**（{src}）")
+    else:
+        notetype = "Basic"
+        report.append("[warn] 探不到 Anki、账本里也没记过笔记类型，"
+                      "先按 Basic 导出 —— **中文版 Anki 请手改成「问答题」**，"
+                      "或开一次 Anki 再跑本命令。")
 
     out_dir = os.path.join(root, "cards")
     os.makedirs(out_dir, exist_ok=True)

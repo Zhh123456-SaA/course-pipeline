@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -369,6 +370,44 @@ if ac0.available():
     check("TSV 声明的笔记类型在 Anki 里真实存在", nt in real, f"{nt} vs {real}")
 else:
     PASSES.append("（跳过笔记类型核对：AnkiConnect 未运行）")
+
+# ---------------------------------------------------------------- 5b 记住笔记类型
+
+# ★ 回归（真实缺口）：Anki 没开时导出的 TSV 一律声明 `#notetype:Basic`，
+#   而中文版 Anki 根本没有 Basic 这个类型（叫「问答题」）——
+#   用户拿这份 TSV 去导入就会踩坑。可是「上次同步成功用的是哪个类型」
+#   账本完全知道，不该丢。所以同步时记下来，离线导出时用它。
+check("账本没记过类型时 remembered_notetype 返回空串",
+      C.remembered_notetype({}) == "" and C.remembered_notetype({"notetype": "  "}) == "")
+check("记住了就能读出来",
+      C.remembered_notetype({"notetype": "问答题"}) == "问答题")
+
+_led = C.cards_ledger_path(LIB)
+_saved_led = json.load(open(_led, encoding="utf-8"))
+try:
+    _mem = json.loads(json.dumps(_saved_led))
+    _mem["notetype"] = "问答题"
+    C.save_cards(LIB, _mem)
+    check("类型能落进账本并读回",
+          C.remembered_notetype(C.load_cards(LIB)) == "问答题")
+
+    # 合并新卡不能把顶层记住的类型弄丢（merge 是「重建账本」最常走的路径）
+    _merged, _ = C.merge_cards(LIB, list(_mem["by_id"].values()))
+    check("合并新卡不会丢掉记住的笔记类型",
+          C.remembered_notetype(_merged) == "问答题",
+          str(C.remembered_notetype(_merged)))
+
+    # 离线导出应当采用记住的类型，而不是退回 Basic
+    _tsv2 = os.path.join(LIB, "cards", "_notetype_probe.tsv")
+    _nt = C.remembered_notetype(C.load_cards(LIB)) or "Basic"
+    C.export_tsv([], _tsv2, notetype=_nt, deck="课程::物理")
+    with open(_tsv2, encoding="utf-8") as f:
+        _hdr = f.read()
+    check("离线导出采用账本记住的笔记类型（不是 Basic）",
+          "#notetype:问答题" in _hdr, " | ".join(_hdr.splitlines()[:4]))
+    os.remove(_tsv2)
+finally:
+    C.save_cards(LIB, _saved_led)   # 还原账本，别污染
 
 # ---------------------------------------------------------------- 6 字段映射（中英）
 
