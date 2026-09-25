@@ -63,6 +63,39 @@ check("没有开头数字时退回净化后的前缀",
       K.lecture_prefix("基础物理实验数据课2026秋季(1)").startswith("基础物理"),
       K.lecture_prefix("基础物理实验数据课2026秋季(1)"))
 
+# ★ 回归（真实事故，**会毁数据**）：老版只认「开头数字」，其余取净化后前 6 字符，
+#   于是 lecture01 / lecture02 / lecture03 **全都得到 `lectur`** —— 三讲的
+#   `lectur.1` 会撞成同一个原子笔记文件名，**互相覆盖**。用户手上正是这套命名。
+check("lectureNN 系列各自分得开（L01/L02/L03，不再都叫 lectur）",
+      [K.lecture_prefix(f"lecture0{i}_线性代数") for i in (1, 2, 3)] == ["L01", "L02", "L03"],
+      str([K.lecture_prefix(f"lecture0{i}_线性代数") for i in (1, 2, 3)]))
+check("  ★ 三讲的前缀两两不同（这条是命门，不能有重复）",
+      len({K.lecture_prefix(f"lecture0{i}_x") for i in (1, 2, 3)}) == 3)
+check("Lecture 3 / L03 也认",
+      K.lecture_prefix("Lecture 3 LU") == "L03" and K.lecture_prefix("L03 something") == "L03")
+check("第N讲 → L，第N章 → C，第N节 → S",
+      K.lecture_prefix("第3讲 特征值") == "L03"
+      and K.lecture_prefix("第3章-细胞膜与表面") == "C03"
+      and K.lecture_prefix("第5节 例题") == "S05")
+check("中文数字也认（第三讲 → L03、第二章 → C02）",
+      K.lecture_prefix("第三讲 特征值与特征向量") == "L03"
+      and K.lecture_prefix("第二章 矩阵") == "C02")
+check("  十一 / 二十三 这类两位数也对",
+      K.lecture_prefix("第十一讲") == "L11" and K.lecture_prefix("第二十三节") == "S23")
+check("空名字有兜底", K.lecture_prefix("") == "L" and K.lecture_prefix("  ") == "L")
+
+# 撞 id 的检测函数本身也要测 —— 它是最后一道闸门
+_dup = K.duplicate_kc_ids([
+    {"label": "讲A", "kcs": [{"id": "L01.1"}, {"id": "L01.2"}]},
+    {"label": "讲B", "kcs": [{"id": "L01.1"}]},
+])
+check("能查出跨讲次重复的 id", set(_dup) == {"L01.1"}, str(_dup))
+check("  且报出是哪几讲撞了", _dup.get("L01.1") == ["讲A", "讲B"], str(_dup))
+check("没有重复时返回空", K.duplicate_kc_ids(
+    [{"label": "A", "kcs": [{"id": "L01.1"}]},
+     {"label": "B", "kcs": [{"id": "L02.1"}]}]) == {})
+check("空输入不炸", K.duplicate_kc_ids([]) == {})
+
 check("分窗：54 页按 8 页切出 7 窗",
       len(K.window_pages(list(range(1, 55)), 8)) == 7,
       str(len(K.window_pages(list(range(1, 55)), 8))))

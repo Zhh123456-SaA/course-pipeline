@@ -495,6 +495,18 @@ def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
         order = [k["id"] for k in sorted(found, key=lambda x: (x.get("page") or 0, x["id"]))]
         kcs_mod.put_lecture(data, stem, label, found, outline=outline, order=order)
 
+    # ★ 保存前查一次**跨讲次 id 重复**。id 同时是原子笔记的文件名，
+    #   两讲撞 id = 后写的悄无声息覆盖先写的（实测：lecture01/02/03 老版都得到
+    #   `lectur`）。宁可在这里报错拦住，也不要写出一份被覆盖过的笔记。
+    dups = kcs_mod.duplicate_kc_ids(data.get("chapters") or [])
+    if dups:
+        sample = "；".join(f"{k}（{ '、'.join(v) }）" for k, v in list(dups.items())[:5])
+        raise SystemExit(
+            f"[error] 有 {len(dups)} 个知识点 id 跨讲次重复，原子笔记会互相覆盖，已拒绝写入。\n"
+            f"        例如：{sample}\n"
+            f"        原因通常是两讲的文件名前缀算成了同一个。请检查 kcs.lecture_prefix()，"
+            f"或把讲义文件改名成带了讲次编号的形式（如 lecture01 xxx.pdf）。")
+
     kcs_mod.save_kcs(root, data)
     total = sum(len(c.get("kcs") or []) for c in data["chapters"])
     report.append(f"[done ] 骨架共 {total} 个知识点，"

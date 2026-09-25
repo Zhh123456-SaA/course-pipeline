@@ -267,16 +267,94 @@ def apply_links(kcs: list[dict], links: dict) -> tuple[list[dict], list[str]]:
 
 # ---------------------------------------------------------------- 工具
 
+#: 中文数字 → 阿拉伯数字（只到 99，够用了）
+_CN_DIGIT = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+             "七": 7, "八": 8, "九": 9}
+_CN_TAG = {"讲": "L", "课": "L", "章": "C", "节": "S"}
+
+
+def _cn2int(s: str) -> int | None:
+    """「三」→3、「十」→10、「十一」→11、「二十三」→23。认不出返回 None。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s == "十":
+        return 10
+    if "十" in s:
+        a, _, b = s.partition("十")
+        if a and a not in _CN_DIGIT:
+            return None
+        if b and b not in _CN_DIGIT:
+            return None
+        return (_CN_DIGIT.get(a, 1) if a else 1) * 10 + (_CN_DIGIT.get(b, 0) if b else 0)
+    if len(s) == 1:
+        return _CN_DIGIT.get(s)
+    return None
+
+
 def lecture_prefix(lecture_id: str) -> str:
     """从讲次名里取一个短前缀当 id 命名空间。
 
-    「05第五讲-动力学1_2026」→「L05」；取不到数字就退回净化后的前若干字符。
+    ★ 回归（真实事故，**会毁数据**）：老版只认「开头的数字」，其余一律取净化后
+    前 6 个字符。于是 `lecture01` / `lecture02` / `lecture03` **全都得到 `lectur`** ——
+    三讲的 `lectur.1` 会撞成同一个知识点文件名，**原子笔记互相覆盖**。
+    用户手上正是 lecture01–03 这套命名，下一步就会踩到。
+
+    现在按实际会出现的几种写法逐个认：
+
+        `lecture03 …` / `Lecture 3` / `L03`   → L03
+        `第3讲` / `第3章` / `第3节`            → L03 / C03 / S03（章不是"讲"，用 C）
+        `05第五讲-动力学1`                     → L05
+        `第三讲 …`（中文数字）                 → L03
+
+    都不认才退回净化后的名字，且**取 10 个字符**（老版 6 个太容易撞）。
     """
-    m = re.match(r"\s*0*(\d{1,3})", lecture_id)
+    s = (lecture_id or "").strip()
+    if not s:
+        return "L"
+
+    # ① lectureNN / lecN / lesson NN / LN（放最前，"lecture03" 必须先被认成 L03）
+    m = re.search(r"(?:lectures?|lessons?|lec|l)\s*0*(\d{1,3})", s, re.I)
     if m:
         return f"L{int(m.group(1)):02d}"
-    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", lecture_id)
-    return (s[:6] or "L")
+
+    # ② 中文数字：第三讲 / 第二章
+    m = re.match(r"\s*第\s*([一二三四五六七八九十两]+)\s*([讲章节课])", s)
+    if m:
+        n = _cn2int(m.group(1))
+        if n:
+            return f"{_CN_TAG[m.group(2)]}{n:02d}"
+
+    # ③ 阿拉伯数字：第3讲 / 第3章
+    m = re.match(r"\s*第\s*0*(\d{1,3})\s*([讲章节课])", s)
+    if m:
+        return f"{_CN_TAG[m.group(2)]}{int(m.group(1)):02d}"
+
+    # ④ 开头的数字：05第五讲… / 01 GC01
+    m = re.match(r"\s*0*(\d{1,3})", s)
+    if m:
+        return f"L{int(m.group(1)):02d}"
+
+    # ⑤ 兜底：净化后取 10 个字符（比 6 个更不容易撞）
+    s2 = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", s)
+    return (s2[:10] or "L")
+
+
+def duplicate_kc_ids(chapters: list[dict]) -> dict[str, list[str]]:
+    """找出**跨讲次重复**的知识点 id。
+
+    为什么必须查：id 同时是**原子笔记的文件名**。两讲撞 id = 后写的把先写的覆盖掉，
+    而且悄无声息（实测：lecture01/02/03 都会得到 `lectur`）。
+    调用方应当在保存前查一次，撞了就大声报出来 —— 宁可报错，不要默默丢数据。
+    """
+    seen: dict[str, list[str]] = {}
+    for ch in chapters or []:
+        label = str(ch.get("label") or ch.get("id") or "?")
+        for k in ch.get("kcs") or []:
+            kid = str(k.get("id") or "")
+            if kid:
+                seen.setdefault(kid, []).append(label)
+    return {k: v for k, v in seen.items() if len(v) > 1}
 
 
 def window_pages(page_numbers: list[int], size: int = DEFAULT_WINDOW) -> list[list[int]]:
