@@ -132,6 +132,41 @@ check("知识点没有自测题时不炸、且给出替代指引",
 check("没有页图时不输出破图标签",
       "<img src=" not in h2)
 
+# ---------------------------------------------------------------- 3b 两种课型
+
+# 用户把两条管道说清楚了：
+#   记忆型（生物）「先问 → 你答 → 看答案」   = ask-first
+#   数理（物理）  「你教授我 → 我记笔记 → 你出题考我 → 我用平板做答，有过程」 = teach-first
+h_ask = L.build_lesson("测试课", ch, "P", one, lambda k: ("../assets/s/p001.jpg", 1),
+                       mode=L.MODE_ASK)
+h_tch = L.build_lesson("测试课", ch, "P", one, lambda k: ("../assets/s/p001.jpg", 1),
+                       mode=L.MODE_TEACH)
+
+check("ask-first：作答区是文本框", "<textarea" in h_ask)
+check("ask-first：讲解是折叠的（先问你，不先给）",
+      "<details" in h_ask and 'class="teachbox"' not in h_ask)
+check("teach-first：讲解默认展开（先教，不折叠）",
+      'class="teachbox"' in h_tch and "<details" not in h_tch)
+check("teach-first：作答区是**贴手写图**，不是打字",
+      "data-drop" in h_tch and "平板" in h_tch)
+check("teach-first：没有 textarea（数理解答打字打不出来）",
+      "<textarea" not in h_tch.split('class="askbox"')[0])
+check("课型写进了 data-mode（两种课型互不覆盖）",
+      'data-mode="ask-first"' in h_ask and 'data-mode="teach-first"' in h_tch)
+
+# ★ 回归（真实事故）：改作答区时把 answer_html 只放进了 teach 分支，
+#   结果**背记课的「看答案」点开是空的** —— 答案块整个没生成。
+#   实测靠产出端核对抓到：`class="answer"` 在 ask-first 文件里出现 0 次。
+for nm, h in (("ask-first", h_ask), ("teach-first", h_tch)):
+    check(f"★ {nm}：答案块必须存在（两种课型都要有参考答案）",
+          'class="answer"' in h and "参考答案" in h)
+    check(f"★ {nm}：答案默认是隐藏的（要点已经展示的那些除外）",
+          'class="answer show"' not in h)
+
+check("未实现的课型名会被兜回 ask-first",
+      'data-mode="ask-first"' in L.build_lesson("测试课", ch, "P", one,
+                                                lambda k: (None, 0), mode="乱写"))
+
 # ---------------------------------------------------------------- 4 幂等
 
 h_a = L.build_lesson("测试课", ch, "P", one, lambda k: ("../assets/s/p001.jpg", 1))

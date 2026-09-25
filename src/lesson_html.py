@@ -39,6 +39,13 @@ MAX_KCS = 6
 GRADED_OK = "ok"
 GRADED_NO = "no"
 
+#: 两种课型 —— 对应用户的两条管道
+#: - MODE_ASK  （记忆型，如生物）：先问 → 你答 → 看答案   （检索练习）
+#: - MODE_TEACH（数理，如物理）：先教 → 你记 → 考你 → 你手写答（有过程）
+MODE_ASK = "ask-first"
+MODE_TEACH = "teach-first"
+MODES = (MODE_ASK, MODE_TEACH)
+
 
 # ---------------------------------------------------------------- 工具
 
@@ -176,6 +183,25 @@ button.on-mid{background:#6b7280;border-color:#6b7280;color:#fff}
   color:#fff}
 .selchip{display:inline-block;background:var(--acc2);color:var(--acc);border-radius:6px;
   padding:1px 7px;font-size:13px;margin-right:6px}
+
+/* ---- 数理管道：先教后考 + 手写作答 ----------------------------------------
+   用户原话：「你教授我——我记笔记——你出题考我——我用平板做答，有过程」。
+   所以数理知识点的讲解**默认展开**（先教），作答区是**贴手写**而不是打字。 */
+section.kc.teach h2{margin-bottom:8px}
+.lesson-note{font-size:14px;color:var(--dim);margin:6px 0 14px}
+.teachbox{border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+  margin:14px 0;background:var(--bg)}
+.teachbox .lb{font-size:12px;color:var(--dim);letter-spacing:.06em;margin-bottom:8px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:16px;text-align:center;
+  color:var(--dim);font-size:14px;cursor:pointer;background:var(--bg);margin-top:10px}
+.drop:hover,.drop.over{border-color:var(--acc);color:var(--acc)}
+.drop input{display:none}
+.shot{margin-top:10px;position:relative}
+.shot img{max-width:100%;border:1px solid var(--line);border-radius:8px;cursor:zoom-in;
+  display:block;background:#fff}
+.shot .del{position:absolute;top:6px;right:6px;font-size:12px;padding:3px 9px;
+  background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:6px;cursor:pointer}
+.shot .del:hover{background:rgba(180,0,0,.85);color:#fff}
 .hint{font-size:13px;color:var(--dim)}
 .answer{display:none;margin-top:12px;padding:12px 14px;border-left:3px solid var(--acc);
   background:var(--acc2);border-radius:0 8px 8px 0;font-size:15px}
@@ -242,6 +268,7 @@ _JS = """
     });
     if (bar) bar.style.width = (total ? Math.round(n * 100 / total) : 0) + "%";
     if (txt) txt.textContent = n + " / " + total + " 题已自评";
+    renderShots();
     renderMine();
   }
 
@@ -309,15 +336,17 @@ _JS = """
   // 而 localStorage 出不去。给一个导出按钮，落到下载目录再由程序并回账本。
   function exportLog(){
     var lesson = document.body.dataset.lesson || "lesson";
-    var out = { lesson: lesson, title: document.title,
+    var out = { lesson: lesson, title: document.title, mode: document.body.dataset.mode || "",
                 exported_at: new Date().toISOString(),
-                grades: {}, answers: {}, asks: st.__asks || [] };
+                grades: {}, answers: {}, shots: {}, asks: st.__asks || [] };
     document.querySelectorAll(".q").forEach(function(q){
       var id = q.dataset.q;
       if (st[id]) out.grades[id] = st[id];
       var ta = q.querySelector("textarea");
       var v = ta && ta.value ? ta.value.trim() : "";
       if (v) out.answers[id] = v;
+      var sp = st["__shots:" + id];
+      if (sp && sp.length) out.shots[id] = sp;   // 图直接进 JSON（自包含，方便存档）
     });
     var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
     var a = document.createElement("a");
@@ -367,6 +396,18 @@ _JS = """
       return;
     }
     if (t.id === "expbtn"){ exportLog(); return; }
+    if (t.dataset && t.dataset.delshot){
+      var arr = st["__shots:" + t.dataset.delshot] || [];
+      arr.splice(parseInt(t.dataset.idx, 10), 1);
+      if (!arr.length) delete st["__shots:" + t.dataset.delshot];
+      save(); renderShots();
+      return;
+    }
+    if (t.closest && t.closest("[data-drop]")){
+      var inp = t.closest("[data-drop]").querySelector("input[type=file]");
+      if (inp) inp.click();
+      return;
+    }
     if (t.tagName === "IMG" && t.closest("figure")){
       var lb = document.querySelector("#lb");
       lb.querySelector("img").src = t.src; lb.classList.add("on");
@@ -374,6 +415,135 @@ _JS = """
     }
     if (t.id === "lb" || (t.closest && t.closest("#lb"))){
       document.querySelector("#lb").classList.remove("on");
+    }
+  });
+
+  // ---- 手写解答贴图（数理管道）---------------------------------------------
+  // 用户原话：「我用平板做答，**有过程**」。数学物理的解答打字打不出来，
+  // 而且**过程本身就是要被看见的东西** —— 所以作答区是贴图，不是文本框。
+  //
+  // 图存在 localStorage（base64）。有 5MB 上限，所以先压到 ≤1400px / JPEG，
+  // 并在接近上限时明确提示先导出，而不是悄悄丢数据。
+  var SHOT_BUDGET = 4.2 * 1024 * 1024;
+
+  function usedBytes(){
+    var n = 0;
+    for (var k in st) if (k.indexOf("__shots") === 0) n += String(st[k]).length;
+    return n;
+  }
+
+  function shrink(file, cb){
+    var fr = new FileReader();
+    fr.onload = function(){
+      var im = new Image();
+      im.onload = function(){
+        var max = 1400, w = im.width, h = im.height;
+        if (w > max || h > max){
+          var s = Math.min(max / w, max / h);
+          w = Math.round(w * s); h = Math.round(h * s);
+        }
+        var cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        cv.getContext("2d").drawImage(im, 0, 0, w, h);
+        cb(cv.toDataURL("image/jpeg", 0.72));
+      };
+      im.onerror = function(){ cb(null); };
+      im.src = fr.result;
+    };
+    fr.onerror = function(){ cb(null); };
+    fr.readAsDataURL(file);
+  }
+
+  function addShot(qid, dataUrl){
+    if (!dataUrl) return;
+    if (usedBytes() + dataUrl.length > SHOT_BUDGET){
+      alert("本机存储快满了（浏览器的 5MB 上限）。请先点「导出我的作答」把已贴的图导出去，再继续。");
+      return;
+    }
+    var box = st["__shots:" + qid] || (st["__shots:" + qid] = []);
+    box.push(dataUrl);
+    save(); renderShots();
+  }
+
+  function renderShots(){
+    document.querySelectorAll(".q").forEach(function(q){
+      var box = q.querySelector("[data-shots]");
+      if (!box) return;
+      var list = st["__shots:" + q.dataset.q] || [];
+      box.innerHTML = "";
+      list.forEach(function(u, i){
+        var wrap = document.createElement("div");
+        wrap.className = "shot";
+        var im = document.createElement("img");
+        im.src = u; wrap.appendChild(im);
+        var del = document.createElement("button");
+        del.className = "del"; del.textContent = "删掉这张";
+        del.dataset.delshot = q.dataset.q; del.dataset.idx = String(i);
+        wrap.appendChild(del);
+        box.appendChild(wrap);
+      });
+    });
+  }
+
+  function handleFiles(qid, files){
+    Array.prototype.forEach.call(files || [], function(f){
+      if (!f || !/^image\\//.test(f.type || "")) return;
+      shrink(f, function(u){ addShot(qid, u); });
+    });
+  }
+
+  // 拖进来 / 粘进来
+  document.addEventListener("dragover", function(e){
+    var d = e.target.closest && e.target.closest("[data-drop]");
+    if (!d) return;
+    e.preventDefault(); d.classList.add("over");
+  });
+  document.addEventListener("dragleave", function(e){
+    var d = e.target.closest && e.target.closest("[data-drop]");
+    if (d) d.classList.remove("over");
+  });
+  document.addEventListener("drop", function(e){
+    var d = e.target.closest && e.target.closest("[data-drop]");
+    if (!d) return;
+    e.preventDefault(); d.classList.remove("over");
+    var q = d.closest(".q");
+    handleFiles(q.dataset.q, e.dataTransfer && e.dataTransfer.files);
+  });
+  // 记录「最后点过的那一题」—— 粘贴/拖入都贴到它，不弹窗问、不猜第一题
+  var lastQ = null;
+  document.addEventListener("click", function(e){
+    var q = e.target.closest && e.target.closest(".q");
+    if (q && !(e.target.closest && e.target.closest("textarea"))) {
+      lastQ = q;
+      document.querySelectorAll(".q").forEach(function(x){
+        x.style.outline = (x === q) ? "2px solid var(--acc)" : "";
+      });
+    }
+  }, true);
+
+  document.addEventListener("paste", function(e){
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var files = [];
+    for (var i = 0; i < items.length; i++){
+      if (items[i].kind === "file"){
+        var f = items[i].getAsFile(); if (f) files.push(f);
+      }
+    }
+    if (!files.length) return;
+    var q = lastQ || document.querySelector(".q");
+    if (!q) return;
+    e.preventDefault();
+    handleFiles(q.dataset.q, files);
+    var tip = q.querySelector(".graded");
+    if (tip){ tip.textContent = "已贴 " + files.length + " 张"; }
+  });
+
+  document.addEventListener("change", function(e){
+    var inp = e.target;
+    if (inp && inp.type === "file" && inp.closest && inp.closest("[data-drop]")){
+      var q = inp.closest(".q");
+      if (q) handleFiles(q.dataset.q, inp.files);
+      inp.value = "";     // 允许再次选同一张
     }
   });
 
@@ -410,21 +580,41 @@ def _answer_block(k: dict) -> str:
             f"<ol>{lis}</ol></div>")
 
 
-def _question(qtext: str, qid: str, answer_html: str) -> str:
-    """一道题 = 先答 → 揭晓 → 自评。答案默认藏起来（这是检索练习的关键）。
+def _question(qtext: str, qid: str, answer_html: str, mode: str = MODE_ASK) -> str:
+    """一道题。
 
-    自评是**三档**而不是两档：「不知道」永不算错
-    （抄 amosblomqvist/learn 的 `correct|wrong|dont_know`）。
-    两档判不出"猜对"——而猜对恰恰是要提前复习的红旗。
+    两种形态（对应两条管道）：
+
+    - `ask-first`（记忆型，如生物）：**先答 → 揭晓 → 自评**。
+      检索练习：答案默认藏起来，逼你先回忆。
+    - `teach-first`（数理）：讲解已经先展开了，这里是**出题考你**，
+      作答区是**贴手写解答**而不是打字 ——
+      用户原话：「我用平板做答，**有过程**」。
+      数学物理的解答打字打不出来，而且过程本身就是要被看见的东西。
+
+    「不知道/不确定」永不算错（抄 amosblomqvist/learn 的 correct|wrong|dont_know）。
     """
+    if mode == MODE_TEACH:
+        answer_area = f"""<div class="drop" data-drop>
+       ✍️ <b>把你在平板上的解答贴到这里</b>（点一下选图，或直接把图拖进来 / Ctrl+V 粘）
+      <input type="file" accept="image/*" multiple>
+    </div>
+    <div class="shotlist" data-shots></div>
+    <div class="hint" style="margin-top:6px">贴了图才算"有过程"；只写答案不算。</div>
+    {answer_html}"""
+    else:
+        # ★ 这里必须带上 answer_html。第一版只放了 textarea，
+        #   结果背记课的「看答案」点开是空的 —— 答案块整个没生成（实测抓到）。
+        answer_area = ('<textarea placeholder="先自己答一遍（哪怕只写关键词）'
+                       '—— 直接看答案等于没学"></textarea>\n  ' + answer_html)
+
     return f"""<div class="q" data-q="{esc(qid)}">
   <div class="ask">{esc(qtext)}</div>
-  <textarea placeholder="先自己答一遍（哪怕只写关键词）—— 直接看答案等于没学"></textarea>
+  {answer_area}
   <div class="row">
     <button data-reveal>看答案</button>
     <span class="hint">答完再点。想不起来也算正常，那正是你该复习的地方。</span>
   </div>
-  {answer_html}
   <div class="row">
     <span class="hint">刚才那题：</span>
     <button data-grade="ok">✅ 会</button>
@@ -438,7 +628,8 @@ def _question(qtext: str, qid: str, answer_html: str) -> str:
 </div>"""
 
 
-def _kc_section(i: int, k: dict, img_rel: str | None, page: int) -> str:
+def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
+                mode: str = MODE_ASK) -> str:
     label = esc(k.get("label"))
     tags = []
     imp = {"must": "必须掌握", "key": "重点", "freq": "常考"}.get(k.get("importance") or "")
@@ -449,7 +640,7 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int) -> str:
 
     qs = list(k.get("self_test") or [])
     ans = _answer_block(k)
-    qhtml = "".join(_question(q, f"{k['id']}#{n}", ans) for n, q in enumerate(qs))
+    qhtml = "".join(_question(q, f"{k['id']}#{n}", ans, mode) for n, q in enumerate(qs))
     if not qhtml:
         qhtml = ('<div class="hint">这一条暂时没有自测题 —— 你自己试着说出它的定义，'
                  '再展开对答案。</div>')
@@ -458,27 +649,48 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int) -> str:
     if img_rel:
         fig = (f'<figure><img src="{esc(img_rel)}" alt="第 {page} 页" loading="lazy">'
                f'<figcaption>课件第 {page} 页 · 点图放大 · 答案以这一页为准</figcaption></figure>')
+    points = ''.join(f'<li>{esc(p)}</li>' for p in (k.get('points') or []))
 
-    return f"""<section class="kc" id="kc{i}">
-  <div class="kcno">第 {i} 个知识点 · {esc(k.get('type') or '')}</div>
-  <h2>{label}{''.join(tags)}</h2>
-  {qhtml}
+    if mode == MODE_TEACH:
+        # 数理：**先教**（讲解默认展开）→ 再考。用户原话「你教授我——我记笔记——
+        # 你出题考我——我用平板做答」。所以不能像记忆型那样一上来就出题。
+        body = f"""<div class="teachbox">
+    <div class="lb">先看这一节要讲什么</div>
+    {fig}
+    <ul class="points">{points}</ul>
+  </div>
+  <div class="lesson-note">
+    看完先别急着往下 —— <b>在平板上把这一页自己推一遍 / 记一遍</b>，再回来做题。
+  </div>
+  <div class="lb" style="font-size:12px;color:var(--dim);letter-spacing:.06em">
+    下面考你（把解答过程写在平板上，再贴上来）</div>
+  {qhtml}"""
+    else:
+        body = f"""{qhtml}
   <details class="expand">
     <summary>展开：课件原页 + 要点（想不出来的时候再看）</summary>
     {fig}
-    <ul class="points">{''.join(f'<li>{esc(p)}</li>' for p in (k.get('points') or []))}</ul>
-  </details>
+    <ul class="points">{points}</ul>
+  </details>"""
+
+    cls = "kc teach" if mode == MODE_TEACH else "kc"
+    return f"""<section class="{cls}" id="kc{i}">
+  <div class="kcno">第 {i} 个知识点 · {esc(k.get('type') or '')}</div>
+  <h2>{label}{''.join(tags)}</h2>
+  {body}
 </section>"""
 
 
 def build_lesson(course_label: str, chapter: dict, part: str,
-                 kc_list: list[dict], img_rel_of) -> str:
+                 kc_list: list[dict], img_rel_of, mode: str = MODE_ASK) -> str:
     """生成一节 HTML 课。`img_rel_of(kc) -> (相对路径 or None, 页号)`。"""
+    if mode not in MODES:
+        mode = MODE_ASK
     outline = chapter.get("outline") or {}
     title = f"{part}"
     goals = outline.get("objectives") or []
     n_q = sum(len(k.get("self_test") or []) for k in kc_list)
-    lesson_id = f"{course_label}:{chapter.get('id')}:{part}"
+    lesson_id = f"{course_label}:{chapter.get('id')}:{part}:{mode}"
 
     goal_html = ""
     if goals:
@@ -488,12 +700,21 @@ def build_lesson(course_label: str, chapter: dict, part: str,
     secs = []
     for i, k in enumerate(kc_list, 1):
         rel, page = img_rel_of(k)
-        secs.append(_kc_section(i, k, rel, page))
+        secs.append(_kc_section(i, k, rel, page, mode))
 
     # 收尾：把这一节的问题再列一遍（问题为第一等公民）
     all_q = [(k.get("label"), q) for k in kc_list for q in (k.get("self_test") or [])]
     checklist = "".join(
         f'<li><b>{esc(lb)}</b>：{esc(q)}</li>' for lb, q in all_q)
+
+    if mode == MODE_TEACH:
+        howto = (f"{len(kc_list)} 个知识点 · {n_q} 道题。<b>顺序是先教后考</b> —— "
+                 f"先把每节的讲解看一遍、在平板上自己推一遍，再看下面的题，"
+                 f"把解答过程写在平板上贴上来。")
+    else:
+        howto = (f"{len(kc_list)} 个知识点 · {n_q} 道题。"
+                 f"<b>顺序是先问后看</b> —— 先自己答，答完再揭晓；"
+                 f"答不上来的地方才是你真正要学的地方。")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -503,16 +724,13 @@ def build_lesson(course_label: str, chapter: dict, part: str,
 <title>{esc(title)} · {esc(course_label)}</title>
 <style>{_CSS}</style>
 </head>
-<body data-lesson="{esc(lesson_id)}">
+<body data-lesson="{esc(lesson_id)}" data-mode="{esc(mode)}">
 <div class="wrap">
 
 <header class="top">
   <div class="crumb">{esc(course_label)} · {esc(outline.get('title') or chapter.get('label') or '')}</div>
   <h1>{esc(title)}</h1>
-  <div class="hint">
-    {len(kc_list)} 个知识点 · {n_q} 道题。
-    <b>顺序是先问后看</b> —— 先自己答，答完再揭晓；答不上来的地方才是你真正要学的地方。
-  </div>
+  <div class="hint">{howto}</div>
   {goal_html}
   <div class="bar"><i></i></div>
   <div class="stat"><span class="done">0 / {n_q} 题已自评</span>
@@ -526,7 +744,7 @@ def build_lesson(course_label: str, chapter: dict, part: str,
   <div class="hint">这一节里没讲清楚、或者你想深挖的地方，写在这里。
   <b>答案里看到不懂的词，直接用鼠标选中它</b>，会浮出一个「问这个」按钮，点了就把那个词带到这里来。
   它会存在本机；导出后可以让程序把它并进你的账本（和你在逐页精读器里的框选追问同一套）。</div>
-  <textarea id="asktext" placeholder="例如：脂筏既然是动态的，那它算不算一种细胞器？"></textarea>
+  <textarea id="asktext" placeholder="例如：质点在圆弧内表面下滑时，法向方程里的 N 为什么不能直接写成 mg？"></textarea>
   <div class="row">
     <button id="addask" class="primary">记下这个问题</button>
     <button id="copyask">复制全部</button>
@@ -536,7 +754,7 @@ def build_lesson(course_label: str, chapter: dict, part: str,
   <div class="mine" id="minelist"></div>
 </section>
 
-<section class="kc">
+<section class="kc" id="wrapup">
   <div class="kcno">收尾</div>
   <h2>这一节学完，你应该能答出这 {len(all_q)} 个问题</h2>
   <ul class="points">{checklist}</ul>

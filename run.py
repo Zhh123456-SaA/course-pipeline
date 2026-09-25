@@ -504,12 +504,19 @@ def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
 
 # ---------------------------------------------------------------- lesson（HTML 课）
 
-def cmd_lesson(course: str, only: str | None = None) -> list[str]:
+def cmd_lesson(course: str, only: str | None = None,
+               mode: str = lesson_html.MODE_ASK) -> list[str]:
     """把知识点渲染成**可交互的 HTML 课**（每节课 = 课件里的一个「部分」）。
 
-    为什么不用 Markdown：用户的库里躺着 122 篇 Markdown 知识点笔记、267 个手写
-    批注位，**一个字都没写过**。Markdown 把答案摊开 → 读完就以为会了；
-    HTML 可以**先问你、等你答、再揭晓**，那才是检索练习。
+    两种课型，对应**两条不同的管道**（用户确认的分科决定）：
+
+    - `ask-first`（记忆型，如生物）：**先问 → 你答 → 看答案**。
+      检索练习：Markdown 把答案摊开，你读完以为会了；这里先问你，你才知道不会。
+    - `teach-first`（数理，如物理）：**先教 → 你记 → 考你 → 你手写答**。
+      用户原话：「你教授我——我记笔记——你出题考我——**我用平板做答，有过程**」。
+      数理没法"先回忆"一个还没学过的推导，所以顺序反过来；
+      而且作答区是**贴手写**——数学物理的解答打字打不出来，过程本身才是要看见的东西。
+
     详见 src/lesson_html.py 顶部的说明。
     """
     root = course_root(course)
@@ -553,7 +560,8 @@ def cmd_lesson(course: str, only: str | None = None) -> list[str]:
                     return f"../assets/{_slug}/p{pg:03d}.jpg", pg
 
                 html_text = lesson_html.build_lesson(
-                    course, ch, title, picked, img_of)
+                    course, ch, title, picked, img_of, mode=mode)
+                # 文件名单里带上课型，两种形态可以并存互不覆盖
                 fn = lesson_html.safe_filename(f"{stem} - {title}")
                 p = lesson_html.write_lesson(root, fn, html_text)
                 produced.add(os.path.normcase(os.path.abspath(p)))
@@ -660,6 +668,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="cards 动作：先清空牌组并重置账本，再全部重建（规则变更后用）")
     ap.add_argument("--sync", action="store_true",
                     help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
+    ap.add_argument("--mode", default="ask-first",
+                    choices=["ask-first", "teach-first"],
+                    help="lesson 动作：ask-first=先问后看（记忆型，如生物）；"
+                         "teach-first=先教后考 + 手写作答（数理，如物理）")
     ap.add_argument("--part", default=None,
                     help="lesson 动作：只生成这一节（课件里的「部分」名）；"
                          "缺省则每个部分各生成一节")
@@ -679,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "kcs":
         lines += cmd_kcs(args.course, window=args.window, ai=not args.no_ai)
     if args.action == "lesson":
-        lines += cmd_lesson(args.course, only=args.part)
+        lines += cmd_lesson(args.course, only=args.part, mode=args.mode)
     if args.action in ("cards",):
         lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild,
                            ai=not args.no_ai, prune=args.prune)
