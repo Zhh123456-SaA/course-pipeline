@@ -34,6 +34,7 @@ import archive  # noqa: E402
 import cards as cards_mod  # noqa: E402
 import engine  # noqa: E402
 import kcs as kcs_mod  # noqa: E402
+import lesson_html  # noqa: E402
 import libroot  # noqa: E402
 import pdf_source  # noqa: E402
 import source_ingest  # noqa: E402
@@ -501,6 +502,92 @@ def cmd_kcs(course: str, window: int = 8, ai: bool = True) -> list[str]:
     return report
 
 
+# ---------------------------------------------------------------- lesson（HTML 课）
+
+def cmd_lesson(course: str, only: str | None = None) -> list[str]:
+    """把知识点渲染成**可交互的 HTML 课**（每节课 = 课件里的一个「部分」）。
+
+    为什么不用 Markdown：用户的库里躺着 122 篇 Markdown 知识点笔记、267 个手写
+    批注位，**一个字都没写过**。Markdown 把答案摊开 → 读完就以为会了；
+    HTML 可以**先问你、等你答、再揭晓**，那才是检索练习。
+    详见 src/lesson_html.py 顶部的说明。
+    """
+    root = course_root(course)
+    led = ledger_of(course)
+    sources = led.load_sources()
+    data = kcs_mod.load_kcs(root)
+    chapters = data.get("chapters") or []
+    if not chapters:
+        return ["[warn] 还没有知识点骨架，先跑 kcs"]
+
+    slugs = {stem: (rec.get("slug") or pdf_source.slugify(stem))
+             for stem, rec in sources["sources"].items()}
+    report: list[str] = []
+    n_lesson = n_kc = n_q = 0
+    produced: set[str] = set()
+
+    for ch in chapters:
+        stem = ch.get("id")
+        slug = slugs.get(stem)
+        parts = (ch.get("outline") or {}).get("parts") or []
+        # 没有导览结构时，把全部知识点当成一节
+        names = [p["label"] for p in parts] or ["全部"]
+
+        for part in names:
+            if only and part != only:
+                continue
+            ordered = lesson_html.kcs_of_part(ch, part)
+            if not ordered:
+                report.append(f"[skip ] {stem} · {part}：这个部分没有知识点")
+                continue
+            # 一个部分装不下就拆成多节 —— 绝不截断（截断会静默丢知识点）
+            chunks = lesson_html.split_lessons(ordered)
+            titles = lesson_html.lesson_names(part, len(chunks))
+
+            for title, picked in zip(titles, chunks):
+                def img_of(k, _slug=slug):
+                    pg = int(k.get("page") or 0)
+                    if not _slug or not pg:
+                        return None, pg
+                    # HTML 在 <课程>/lessons/ 下，页图在 <课程>/assets/<slug>/
+                    return f"../assets/{_slug}/p{pg:03d}.jpg", pg
+
+                html_text = lesson_html.build_lesson(
+                    course, ch, title, picked, img_of)
+                fn = lesson_html.safe_filename(f"{stem} - {title}")
+                p = lesson_html.write_lesson(root, fn, html_text)
+                produced.add(os.path.normcase(os.path.abspath(p)))
+                nq = sum(len(k.get("self_test") or []) for k in picked)
+                n_lesson += 1
+                n_kc += len(picked)
+                n_q += nq
+                report.append(f"[lesson] {os.path.relpath(p, root)}  "
+                              f"{len(picked)} 个知识点 · {nq} 道题")
+
+    # 清掉上次留下的孤儿课：分节规则一变（比如"一个部分装不下就拆成 1/2、2/2"），
+    # 旧文件名就没人认领了。`lessons/` 是程序独占目录，可以清。
+    # **只在全量生成时清** —— 指定 `--part` 时若也清，会把你没让它生成的节全删掉。
+    n_orphan = 0
+    if not only and n_lesson:
+        d = os.path.join(root, "lessons")
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                fp = os.path.join(d, fn)
+                if (fn.lower().endswith(".html")
+                        and os.path.normcase(os.path.abspath(fp)) not in produced):
+                    os.remove(fp)
+                    n_orphan += 1
+        if n_orphan:
+            report.append(f"[clean] 删掉 {n_orphan} 个上一版留下的孤儿课")
+
+    if not n_lesson:
+        report.append("[warn] 没有生成任何一节（--part 名字对不上？）")
+    else:
+        report.append(f"[done ] {n_lesson} 节课 · {n_kc} 个知识点 · {n_q} 道题；"
+                      f"双击 lessons/ 下的 .html 即可打开（完全离线）")
+    return report
+
+
 # ---------------------------------------------------------------- check
 
 def cmd_check(course: str) -> list[str]:
@@ -573,9 +660,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="cards 动作：先清空牌组并重置账本，再全部重建（规则变更后用）")
     ap.add_argument("--sync", action="store_true",
                     help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
+    ap.add_argument("--part", default=None,
+                    help="lesson 动作：只生成这一节（课件里的「部分」名）；"
+                         "缺省则每个部分各生成一节")
     ap.add_argument("action",
                     choices=["ingest", "render", "archive", "cards", "kcs",
-                             "all", "check", "clean"])
+                             "lesson", "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
@@ -588,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
         lines += cmd_archive(args.course, args.ann_root)
     if args.action == "kcs":
         lines += cmd_kcs(args.course, window=args.window, ai=not args.no_ai)
+    if args.action == "lesson":
+        lines += cmd_lesson(args.course, only=args.part)
     if args.action in ("cards",):
         lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild,
                            ai=not args.no_ai, prune=args.prune)
