@@ -103,6 +103,20 @@ check("没有外链依赖（离线可用）",
       str(re.findall(r'(?:src|href)="https?://[^"]+', html)[:3]))
 check("有自评按钮（学习记录的唯一来源）",
       'data-grade="ok"' in html and 'data-grade="no"' in html)
+# ★ 三档而不是两档：「不知道」永不算错（抄 amosblomqvist/learn 的
+#   correct|wrong|dont_know）。两档判不出"猜对"—— 而猜对恰恰是要提前复习的红旗。
+check("自评是三档（会 / 不确定 / 不会）",
+      'data-grade="mid"' in html and "on-mid" in html)
+check("三档各自有文案", "不确定" in html)
+# ★ 用户真实的行为是「框选一段 + 提问」（他在逐页精读器里就这么干了 12 次），
+#   而不是对着空文本框打字。所以提问入口必须长在答案的文字上。
+check("选中答案里的词就能提问（浮层 + 鼠标松开设监听）",
+      'pop.id = "askpop"' in html and 'addEventListener("mouseup"' in html
+      and "getSelection" in html and "takeSelection" in html)
+check("  且只在知识点区内生效（不在页头/追问区乱弹）",
+      'closest("section.kc")' in html)
+check("有导出按钮（数据不能困在 localStorage 里）",
+      'id="expbtn"' in html and "exportLog" in html)
 check("有追问框", 'id="asktext"' in html and 'id="addask"' in html)
 check("自评状态存 localStorage 且做了容错",
       "localStorage" in html and "catch(e)" in html)

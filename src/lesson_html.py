@@ -162,6 +162,20 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
 button.primary:hover{opacity:.9;color:#fff}
 button.on-ok{background:var(--ok);border-color:var(--ok);color:#fff}
 button.on-no{background:var(--warn);border-color:var(--warn);color:#fff}
+button.on-mid{background:#6b7280;border-color:#6b7280;color:#fff}
+
+/* 选中答案里的词 → 浮出「问这个」。
+   ★ 用户真实的行为是「框选一段 + 提问」（他在逐页精读器里就这么干了 12 次），
+   而不是对着空文本框打字。所以提问入口必须长在**答案的文字上**。 */
+#askpop{position:absolute;display:none;z-index:60}
+#askpop.on{display:block}
+#askpop button{background:var(--acc);color:#fff;border-color:var(--acc);
+  box-shadow:0 4px 14px rgba(0,0,0,.25);font-size:13px;padding:6px 12px;max-width:320px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.answer::selection,.answer *::selection,ul.points li::selection{background:var(--acc);
+  color:#fff}
+.selchip{display:inline-block;background:var(--acc2);color:var(--acc);border-radius:6px;
+  padding:1px 7px;font-size:13px;margin-right:6px}
 .hint{font-size:13px;color:var(--dim)}
 .answer{display:none;margin-top:12px;padding:12px 14px;border-left:3px solid var(--acc);
   background:var(--acc2);border-radius:0 8px 8px 0;font-size:15px}
@@ -207,6 +221,8 @@ _JS = """
   function save(){
     try { localStorage.setItem(KEY, JSON.stringify(st)); } catch(e) {}
   }
+  var GRADE_CLASS = { ok: "on-ok", mid: "on-mid", no: "on-no" };
+  var GRADE_TEXT  = { ok: "✅ 已标记：会", mid: "🤔 已标记：不确定", no: "❌ 已标记：不会" };
 
   var total = document.querySelectorAll(".q").length;
   var bar = document.querySelector(".bar > i");
@@ -218,20 +234,108 @@ _JS = """
       var g = st[q.dataset.q];
       if (g) n++;
       q.querySelectorAll("button[data-grade]").forEach(function(b){
-        b.classList.toggle(b.dataset.grade === "ok" ? "on-ok" : "on-no",
+        b.classList.toggle(GRADE_CLASS[b.dataset.grade] || "on-no",
                            g === b.dataset.grade);
       });
       var lab = q.querySelector(".graded");
-      if (lab) lab.textContent = g === "ok" ? "✅ 已标记：会"
-                              : g === "no" ? "❌ 已标记：还不会" : "";
+      if (lab) lab.textContent = GRADE_TEXT[g] || "";
     });
     if (bar) bar.style.width = (total ? Math.round(n * 100 / total) : 0) + "%";
     if (txt) txt.textContent = n + " / " + total + " 题已自评";
     renderMine();
   }
 
+  // ---- 选中答案里的词 → 提问 -------------------------------------------------
+  // 用户真实的行为是「框选一段 + 提问」（他在逐页精读器里就这么干了 12 次），
+  // 而不是对着空文本框打字。所以提问入口必须长在**答案的文字上**。
+  var pop = document.createElement("div");
+  pop.id = "askpop";
+  pop.innerHTML = '<button type="button" id="askpopbtn"></button>';
+  document.body.appendChild(pop);
+
+  function hidePop(){ pop.classList.remove("on"); }
+  function showPop(x, y, text, secId, kcLabel){
+    var b = pop.querySelector("button");
+    b.textContent = "问这个：「" + (text.length > 16 ? text.slice(0, 16) + "…" : text) + "」";
+    pop.dataset.text = text; pop.dataset.sec = secId; pop.dataset.kc = kcLabel;
+    pop.style.left = Math.max(8, Math.min(x, window.innerWidth - 260)) + "px";
+    pop.style.top  = (y + window.scrollY + 10) + "px";
+    pop.classList.add("on");
+  }
+
+  document.addEventListener("mouseup", function(e){
+    if (e.target.closest && e.target.closest("#askpop")) return;
+    setTimeout(function(){
+      var sel = window.getSelection();
+      var t = sel ? String(sel.toString() || "").replace(/\\s+/g, " ").trim() : "";
+      if (!t || t.length < 2 || t.length > 300) { hidePop(); return; }
+      var node = sel.anchorNode;
+      var el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+      if (!el || !el.closest) { hidePop(); return; }
+      // 只在「知识点区」里允许框选提问，避免在页头/追问区乱弹
+      var sec = el.closest("section.kc");
+      if (!sec || sec.id === "wrapup") { hidePop(); return; }
+      var q = el.closest(".q");
+      var h2 = sec.querySelector("h2");
+      pop.dataset.qid = q ? (q.dataset.q || "") : "";
+      showPop(e.clientX, e.clientY, t, sec.id, h2 ? h2.textContent.trim() : "");
+    }, 10);
+  });
+
+  document.addEventListener("mousedown", function(e){
+    if (!e.target.closest || !e.target.closest("#askpop")) hidePop();
+  });
+
+  // 点了「问这个」→ 把选中的词**带进追问框**（保留出处），光标定位好等用户补一句话。
+  // 不是替他生成问题：他自己在精读器里也是「框选 + 自己打字」。
+  function takeSelection(){
+    var text = pop.dataset.text || "";
+    var kc = pop.dataset.kc || "";
+    if (!text) return;
+    var box = document.querySelector("#asktext");
+    var cur = (box.value || "").trim();
+    var prefix = "关于「" + text + "」（" + kc + "）：";
+    box.value = cur ? (cur + "\\n" + prefix) : prefix;
+    hidePop();
+    box.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(function(){
+      box.focus();
+      try { box.setSelectionRange(box.value.length, box.value.length); } catch(err) {}
+    }, 260);
+  }
+
+  // ---- 导出：数据不能困在浏览器里 -------------------------------------------
+  // 自评是「下一步学什么」的唯一数据来源（Q17 决定先攒数据），
+  // 而 localStorage 出不去。给一个导出按钮，落到下载目录再由程序并回账本。
+  function exportLog(){
+    var lesson = document.body.dataset.lesson || "lesson";
+    var out = { lesson: lesson, title: document.title,
+                exported_at: new Date().toISOString(),
+                grades: {}, answers: {}, asks: st.__asks || [] };
+    document.querySelectorAll(".q").forEach(function(q){
+      var id = q.dataset.q;
+      if (st[id]) out.grades[id] = st[id];
+      var ta = q.querySelector("textarea");
+      var v = ta && ta.value ? ta.value.trim() : "";
+      if (v) out.answers[id] = v;
+    });
+    var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "study-" + lesson.replace(/[^0-9A-Za-z\\u4e00-\\u9fff]+/g, "_") + ".json";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+    var b = document.querySelector("#expbtn");
+    if (b) { b.textContent = "已导出（在你浏览器下载目录）";
+             setTimeout(function(){ b.textContent = "导出我的作答"; }, 2000); }
+  }
+
   document.addEventListener("click", function(e){
     var t = e.target;
+    if (!t.dataset) { t = t.parentElement || t; }
+    if (t.id === "askpopbtn" || (t.closest && t.closest("#askpop"))){
+      takeSelection(); return;
+    }
     if (t.dataset && t.dataset.reveal !== undefined){
       var a = t.closest(".q").querySelector(".answer");
       a.classList.toggle("show");
@@ -258,16 +362,17 @@ _JS = """
       var list = st.__asks || [];
       var text = list.map(function(x){ return "- " + x.q; }).join("\\n");
       if (!text) return;
-      navigator.clipboard && navigator.clipboard.writeText(text);
+      if (navigator.clipboard) navigator.clipboard.writeText(text);
       t.textContent = "已复制"; setTimeout(function(){ t.textContent = "复制全部"; }, 1200);
       return;
     }
+    if (t.id === "expbtn"){ exportLog(); return; }
     if (t.tagName === "IMG" && t.closest("figure")){
       var lb = document.querySelector("#lb");
       lb.querySelector("img").src = t.src; lb.classList.add("on");
       return;
     }
-    if (t.id === "lb" || t.closest("#lb")){
+    if (t.id === "lb" || (t.closest && t.closest("#lb"))){
       document.querySelector("#lb").classList.remove("on");
     }
   });
@@ -287,7 +392,8 @@ _JS = """
   }
 
   document.addEventListener("keydown", function(e){
-    if (e.key === "Escape") document.querySelector("#lb").classList.remove("on");
+    if (e.key === "Escape"){ hidePop();
+      document.querySelector("#lb").classList.remove("on"); }
   });
 
   refresh();
@@ -305,7 +411,12 @@ def _answer_block(k: dict) -> str:
 
 
 def _question(qtext: str, qid: str, answer_html: str) -> str:
-    """一道题 = 先答 → 揭晓 → 自评。答案默认藏起来（这是检索练习的关键）。"""
+    """一道题 = 先答 → 揭晓 → 自评。答案默认藏起来（这是检索练习的关键）。
+
+    自评是**三档**而不是两档：「不知道」永不算错
+    （抄 amosblomqvist/learn 的 `correct|wrong|dont_know`）。
+    两档判不出"猜对"——而猜对恰恰是要提前复习的红旗。
+    """
     return f"""<div class="q" data-q="{esc(qid)}">
   <div class="ask">{esc(qtext)}</div>
   <textarea placeholder="先自己答一遍（哪怕只写关键词）—— 直接看答案等于没学"></textarea>
@@ -316,9 +427,13 @@ def _question(qtext: str, qid: str, answer_html: str) -> str:
   {answer_html}
   <div class="row">
     <span class="hint">刚才那题：</span>
-    <button data-grade="ok">✅ 我答对了</button>
-    <button data-grade="no">❌ 我答不上来</button>
+    <button data-grade="ok">✅ 会</button>
+    <button data-grade="mid">🤔 不确定</button>
+    <button data-grade="no">❌ 不会</button>
     <span class="graded"></span>
+  </div>
+  <div class="hint" style="margin-top:6px">
+    💡 <b>答案里看到不懂的词，直接用鼠标选中它</b> —— 会浮出一个「问这个」按钮。
   </div>
 </div>"""
 
@@ -409,11 +524,13 @@ def build_lesson(course_label: str, chapter: dict, part: str,
 <section class="askbox">
   <h2>还是要问？</h2>
   <div class="hint">这一节里没讲清楚、或者你想深挖的地方，写在这里。
-  它会存在本机；连上网后可以让程序把它并进你的账本（和你在逐页精读器里的框选追问同一套）。</div>
+  <b>答案里看到不懂的词，直接用鼠标选中它</b>，会浮出一个「问这个」按钮，点了就把那个词带到这里来。
+  它会存在本机；导出后可以让程序把它并进你的账本（和你在逐页精读器里的框选追问同一套）。</div>
   <textarea id="asktext" placeholder="例如：脂筏既然是动态的，那它算不算一种细胞器？"></textarea>
   <div class="row">
     <button id="addask" class="primary">记下这个问题</button>
     <button id="copyask">复制全部</button>
+    <button id="expbtn">导出我的作答</button>
     <span class="hint" id="askcount"></span>
   </div>
   <div class="mine" id="minelist"></div>
