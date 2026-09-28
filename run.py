@@ -546,6 +546,13 @@ def cmd_lesson(course: str, only: str | None = None,
     n_lesson = n_kc = n_q = 0
     produced: set[str] = set()
 
+    # 过课件时划的线 / 提的问题 —— 用来**支配**这一步的呈现
+    # （"第一遍的产出支配后面"，见 lesson_html 里 build_lesson 的 mine_html）
+    marks_by_page = study.marks_by_page(root)
+    if marks_by_page:
+        report.append(f"[marks] 账本里有 {sum(v['n'] for v in marks_by_page.values())} 处课件标记"
+                      f"，涉及 {len(marks_by_page)} 页 —— 会标进对应的知识点")
+
     for ch in chapters:
         stem = ch.get("id")
         slug = slugs.get(stem)
@@ -561,6 +568,24 @@ def cmd_lesson(course: str, only: str | None = None,
                 if m:
                     page_file[int(m.group(1))] = fn
         miss_img: list[int] = []
+
+        # ---- 过课件：整讲**一页**，翻页看原件 + 拖框标记 + 框上提问 --------------
+        # 不分「部分」也不出题 —— 这一步的目的只是让他产生两种信号
+        # （「这里重要」的划线、与「这里不懂」的提问），不是学。
+        if mode == lesson_html.MODE_SURVEY:
+            plist = [{"no": n, "src": f"../assets/{slug}/{fn}"}
+                     for n, fn in sorted(page_file.items())]
+            if not plist:
+                report.append(f"[skip ] {stem}：没有页图，过课件页生成不了")
+                continue
+            html_text = lesson_html.build_survey(course, ch, plist, html_name=stem)
+            fn = lesson_html.safe_filename(f"{stem} - 过课件")
+            p = lesson_html.write_lesson(root, fn, html_text)
+            produced.add(os.path.normcase(os.path.abspath(p)))
+            n_lesson += 1
+            report.append(f"[survey] {os.path.relpath(p, root)}  {len(plist)} 页"
+                          f"（拖框标记 / 框上提问，导出后 study --import 进账本）")
+            continue
 
         parts = (ch.get("outline") or {}).get("parts") or []
         # 没有导览结构时，把全部知识点当成一节
@@ -589,7 +614,8 @@ def cmd_lesson(course: str, only: str | None = None,
                     return f"../assets/{_slug}/{fn}", pg
 
                 html_text = lesson_html.build_lesson(
-                    course, ch, title, picked, img_of, mode=mode)
+                    course, ch, title, picked, img_of, mode=mode,
+                    marks_by_page=marks_by_page)
                 # 文件名单里带上课型，两种形态可以并存互不覆盖
                 fn = lesson_html.safe_filename(f"{stem} - {title}")
                 p = lesson_html.write_lesson(root, fn, html_text)
@@ -610,23 +636,31 @@ def cmd_lesson(course: str, only: str | None = None,
 
     # 清掉上次留下的孤儿课：分节规则一变（比如"一个部分装不下就拆成 1/2、2/2"），
     # 旧文件名就没人认领了。`lessons/` 是程序独占目录，可以清。
-    # **只在全量生成时清** —— 指定 `--part` 时若也清，会把你没让它生成的节全删掉。
+    #
+    # ★ 只清**同一课型**的孤儿（见 lesson_html.clean_orphans 的说明：
+    #   早先按"本次没产出的一律删"，跑一次 --mode survey 把 15 节 ask-first 全删了）。
+    #   另外指定 `--part` 时也不清，否则会删掉你没让它生成的节。
     n_orphan = 0
     if not only and n_lesson:
-        d = os.path.join(root, "lessons")
-        if os.path.isdir(d):
-            for fn in sorted(os.listdir(d)):
-                fp = os.path.join(d, fn)
-                if (fn.lower().endswith(".html")
-                        and os.path.normcase(os.path.abspath(fp)) not in produced):
-                    os.remove(fp)
-                    n_orphan += 1
+        n_orphan = lesson_html.clean_orphans(os.path.join(root, "lessons"),
+                                             produced, mode)
         if n_orphan:
-            report.append(f"[clean] 删掉 {n_orphan} 个上一版留下的孤儿课")
+            report.append(f"[clean] 删掉 {n_orphan} 个上一版留下的孤儿课（{mode}）")
 
     if not n_lesson:
         report.append("[warn] 没有生成任何一节（--part 名字对不上？）")
     else:
+        # 标记页如果没有知识点挂上去，会**悄悄消失**（实测：表格页 15/56/69/99/117
+        # 上没有知识点的 page，用户在那些页划的线就丢在账本里没人看）。
+        # 宁可吵一句，也不要把他的信号吞掉。
+        kc_pages = {int(k.get("page") or 0)
+                    for ch in chapters for k in (ch.get("kcs") or [])}
+        orphan_pages = sorted(set(marks_by_page) - kc_pages)
+        if orphan_pages:
+            n = sum(marks_by_page[p]["n"] for p in orphan_pages)
+            report.append(f"[warn ] 有 {n} 处标记落在没有知识点的页上"
+                          f"（第 {orphan_pages[:8]}{'…' if len(orphan_pages) > 8 else ''} 页），"
+                          f"它们不会出现在任何一节里 —— 这些页多半没抽出知识点。")
         report.append(f"[done ] {n_lesson} 节课 · {n_kc} 个知识点 · {n_q} 道题；"
                       f"双击 lessons/ 下的 .html 即可打开（完全离线）")
     return report
@@ -732,8 +766,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="study 动作：导入 HTML 课「导出我的作答」生成的 "
                          "study-*.json（给文件或目录都行）")
     ap.add_argument("--mode", default="ask-first",
-                    choices=["ask-first", "teach-first"],
-                    help="lesson 动作：ask-first=先问后看（记忆型，如生物）；"
+                    choices=["survey", "ask-first", "teach-first"],
+                    help="lesson 动作：survey=过课件（翻页看原件 + 拖框标记 + 框上提问）；"
+                         "ask-first=先问后看（记忆型，如生物）；"
                          "teach-first=先教后考 + 手写作答（数理，如物理）")
     ap.add_argument("--part", default=None,
                     help="lesson 动作：只生成这一节（课件里的「部分」名）；"

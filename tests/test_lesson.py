@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import os
 import re
+import shutil
 import sys
 
 try:
@@ -180,6 +181,49 @@ check("★ 写明「一次性」且支持多选多张", "一次性" in h_tch and
 check("每张图有可选标注框（不强制与题号对应）",
       "shotnote" in h_tch and "可不填" in h_tch)
 check("ask-first 课里没有这个上传区", 'id="mywork"' not in h_ask)
+
+# ---------------------------------------------------------------- 3c 过课件（survey）
+
+# 用户原话：「我希望我可以**先看课件，划线记笔记问问题**，之后经历现在的流程」。
+# 关键技术决定：课件页是图片、选不中文字 → 划线只能是**在图上拖一个矩形**，
+# 而这恰好就是他框选提问的同一个动作。
+_plist = [{"no": 1, "src": "../assets/s/p001.jpg"},
+          {"no": 2, "src": "../assets/s/p002.jpg"}]
+h_sv = L.build_survey("测试课", ch, _plist, html_name="T")
+check("survey：课型标记正确", 'data-mode="survey"' in h_sv)
+check("survey：页图列表嵌进去了（翻页靠它）", "__PAGES__" in h_sv and "p002.jpg" in h_sv)
+check("survey：有可拖框的覆盖层", 'id="layer"' in h_sv and "pointerdown" in h_sv)
+check("survey：拖框后会生成标记（坐标按百分比，与分辨率无关）",
+      "pointerup" in h_sv and 'style.left = r[0] + "%"' in h_sv)
+check("survey：框上能提问", "❓" in h_sv and "askmk" in h_sv)
+check("survey：**不出题、不给答案**（它只是「过一遍」）",
+      "data-q=" not in h_sv and 'class="answer"' not in h_sv
+      and "看答案" not in h_sv and "data-grade" not in h_sv)
+check("survey：能导出（标记要能进账本）", "exportLog" in h_sv and "marks" in h_sv)
+check("survey：支持键盘翻页", "ArrowLeft" in h_sv and "ArrowRight" in h_sv)
+check("survey：没有页图时不炸（退回一个占位页）",
+      'data-mode="survey"' in L.build_survey("测试课", ch, []))
+
+# ★ 回归（真实事故）：孤儿清理按"本次没产出的一律删"，跑一次 `--mode survey`
+#   （整讲只出 1 页）把 15 节 ask-first 课**全删了**。多种课型是并存设计，
+#   清理必须按课型分开。
+import tempfile as _tf  # noqa: E402
+_d = os.path.join(_tf.gettempdir(), "lesson-orphan-test")
+shutil.rmtree(_d, ignore_errors=True)
+os.makedirs(_d, exist_ok=True)
+for nm, md in (("a.html", "ask-first"), ("b.html", "ask-first"), ("c.html", "survey"),
+               ("keep.html", "survey")):
+    with open(os.path.join(_d, nm), "w", encoding="utf-8") as f:
+        f.write(f'<body data-mode="{md}">x</body>')
+_keep = os.path.normcase(os.path.abspath(os.path.join(_d, "keep.html")))
+_n = L.clean_orphans(_d, {_keep}, "survey")
+check("★ clean_orphans 只删同课型的孤儿（survey 不能删掉 ask-first）",
+      _n == 1 and not os.path.exists(os.path.join(_d, "c.html"))
+      and os.path.exists(os.path.join(_d, "a.html")) and os.path.exists(os.path.join(_d, "b.html")),
+      f"删了 {_n} 个；剩下 {sorted(os.listdir(_d))}")
+check("  被产出的文件不会被删", os.path.exists(os.path.join(_d, "keep.html")))
+check("  目录不存在时返回 0（不炸）", L.clean_orphans(os.path.join(_d, "没有"), set(), "survey") == 0)
+shutil.rmtree(_d, ignore_errors=True)
 
 # ---------------------------------------------------------------- 4 幂等
 

@@ -39,12 +39,14 @@ MAX_KCS = 6
 GRADED_OK = "ok"
 GRADED_NO = "no"
 
-#: 两种课型 —— 对应用户的两条管道
+#: 课型（对应用户的两条管道 + 一个前置的"过课件"）
+#: - MODE_SURVEY（过课件）：**先看原件**，划线 + 提问，不出题、不给答案
 #: - MODE_ASK  （记忆型，如生物）：先问 → 你答 → 看答案   （检索练习）
 #: - MODE_TEACH（数理，如物理）：先教 → 你记 → 考你 → 你手写答（有过程）
+MODE_SURVEY = "survey"
 MODE_ASK = "ask-first"
 MODE_TEACH = "teach-first"
-MODES = (MODE_ASK, MODE_TEACH)
+MODES = (MODE_SURVEY, MODE_ASK, MODE_TEACH)
 
 
 # ---------------------------------------------------------------- 工具
@@ -205,6 +207,14 @@ section.kc.teach h2{margin-bottom:8px}
 .shotnote{width:100%;margin-top:6px;padding:7px 10px;border:1px solid var(--line);
   border-radius:8px;background:var(--card);color:var(--fg);font:inherit;font-size:14px}
 .shotnote:focus{outline:2px solid var(--acc);outline-offset:1px;border-color:transparent}
+
+/* 你在过课件时自己划过的线 —— 与程序判定的"必须掌握/枢纽"并列显示 */
+.minebadge{background:#fff8e6;border:1px solid #f0d9a0;border-radius:8px;
+  padding:7px 12px;font-size:13px;margin:10px 0;color:#8a6d1f}
+@media (prefers-color-scheme:dark){.minebadge{background:#33290f;border-color:#5c4a1a;
+  color:#e0c675}}
+.minebadge b{color:#b45309}
+.mineq{font-size:13px;color:var(--acc);margin:4px 0 0 14px}
 .hint{font-size:13px;color:var(--dim)}
 .answer{display:none;margin-top:12px;padding:12px 14px;border-left:3px solid var(--acc);
   background:var(--acc2);border-radius:0 8px 8px 0;font-size:15px}
@@ -579,6 +589,371 @@ _JS = """
 """
 
 
+# ---------------------------------------------------------------- 过课件（MODE_SURVEY）
+#
+# 用户原话：「我还想集成原本那个看课件问问题 —— 我希望我可以**先看课件，划线记笔记
+# 问问题**，之后经历现在的流程」。
+#
+# 为什么这一步重要（有行为数据支撑）：
+#   他真实做的只有两件事 —— 框选提问 12 次、平板手写 14/17 页；
+#   而我产出的 122 篇 Markdown 笔记、267 个要打字的批注位，**他一个字都没用过**。
+#   所以我一直在让他做他不做的事。"先看原件 + 划线 + 提问"才是他的真实动作。
+#
+# 关键技术决定：**课件页是图片，选不中文字** —— 所以划线只能是**在图上拖一个矩形**。
+# 这恰好就是他框选提问的同一个动作，肌肉记忆直接复用：
+#     拖一个框        = 标记「这里重要」（零成本，所以他真的会做）
+#     框上再点 ❓     = 提问「这里我不懂」（要打字，所以会少很多）
+# 两种信号都记下来 —— 划线数量远多于提问，是更密的信号。
+
+_SURVEY_CSS = """
+*{box-sizing:border-box}
+body{margin:0;background:#16181c;color:#e8e6e3;
+  font:16px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.bar{position:sticky;top:0;z-index:20;display:flex;gap:12px;align-items:center;
+  padding:10px 18px;background:#1e2126;border-bottom:1px solid #2c3036;flex-wrap:wrap}
+.bar b{font-variant-numeric:tabular-nums}
+button{font:inherit;font-size:14px;padding:6px 14px;border-radius:8px;cursor:pointer;
+  border:1px solid #2c3036;background:#262a30;color:#e8e6e3}
+button:hover{border-color:#7fc9a0;color:#7fc9a0}
+button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
+.hint{font-size:13px;color:#9aa0a6}
+.stage{max-width:1100px;margin:22px auto;padding:0 18px}
+.pg{position:relative;line-height:0;border-radius:10px;overflow:hidden;
+  box-shadow:0 10px 40px -12px rgba(0,0,0,.6)}
+.pg img{width:100%;display:block;background:#fff;user-select:none;-webkit-user-drag:none}
+.layer{position:absolute;inset:0;cursor:crosshair}
+.mk{position:absolute;border:2px solid #f5c451;background:rgba(245,196,81,.22);
+  border-radius:3px;cursor:pointer}
+.mk.q{border-color:#7fc9a0;background:rgba(127,201,160,.22)}
+.mk .qbtn{position:absolute;right:-2px;bottom:-2px;transform:translateY(100%);
+  font-size:12px;padding:2px 7px;background:#2f6f4e;border-color:#2f6f4e;color:#fff;
+  border-radius:0 0 6px 6px;line-height:1.4}
+.mk .del{position:absolute;left:-2px;bottom:-2px;transform:translateY(100%);
+  font-size:12px;padding:2px 7px;background:#7f1d1d;border-color:#7f1d1d;color:#fff;
+  border-radius:0 0 6px 6px;line-height:1.4}
+.mk .qtext{position:absolute;left:0;top:100%;margin-top:20px;font-size:12px;
+  background:#1e2126;border:1px solid #2c3036;border-radius:6px;padding:3px 8px;
+  color:#7fc9a0;white-space:nowrap;max-width:420px;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.6}
+#editor{position:fixed;z-index:40;display:none;background:#1e2126;border:1px solid #2c3036;
+  border-radius:10px;padding:10px;box-shadow:0 12px 40px -10px rgba(0,0,0,.7);width:340px}
+#editor.on{display:block}
+#editor textarea{width:100%;min-height:64px;padding:8px 10px;border-radius:8px;
+  border:1px solid #2c3036;background:#16181c;color:#e8e6e3;font:inherit;font-size:14px;
+  resize:vertical}
+#editor .row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.mkbox{max-width:1100px;margin:26px auto 80px;padding:0 18px}
+.mkbox h2{font-size:17px;margin:0 0 10px}
+.mkitem{display:flex;gap:10px;align-items:flex-start;font-size:14px;padding:7px 0;
+  border-bottom:1px solid #2c3036}
+.mkitem .p{color:#9aa0a6;white-space:nowrap;font-variant-numeric:tabular-nums}
+.mkitem .q{color:#7fc9a0}
+.mkitem a{color:#f5c451;cursor:pointer;text-decoration:none}
+"""
+
+_SURVEY_JS = """
+(function(){
+  var KEY = "c2md:" + document.body.dataset.lesson;
+  var st = {};
+  try { st = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch(e) { st = {}; }
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(st)); } catch(e) {} }
+  function marks(){ return st.__marks || (st.__marks = []); }
+
+  var PAGES = window.__PAGES__ || [];
+  var cur = 0;
+  var img = document.getElementById("pimg");
+  var layer = document.getElementById("layer");
+  var pno = document.getElementById("pno");
+  var drag = null, editorFor = -1;
+
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+  function go(i){
+    cur = clamp(i, 0, PAGES.length - 1);
+    img.src = PAGES[cur].src;
+    pno.textContent = (cur + 1) + " / " + PAGES.length;
+    hideEditor();
+    render();
+    try { history.replaceState(null, "", "#p" + (cur + 1)); } catch(e) {}
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function pageMarks(){
+    var p = cur + 1;
+    return marks().map(function(m, i){ return { m: m, i: i }; })
+                  .filter(function(x){ return x.m.p === p; });
+  }
+
+  function render(){
+    layer.innerHTML = "";
+    pageMarks().forEach(function(x){
+      var m = x.m, r = m.r;
+      var d = document.createElement("div");
+      d.className = "mk" + (m.q ? " q" : "");
+      d.style.left = r[0] + "%"; d.style.top = r[1] + "%";
+      d.style.width = r[2] + "%"; d.style.height = r[3] + "%";
+      d.dataset.mi = String(x.i);
+      var qb = document.createElement("button");
+      qb.className = "qbtn"; qb.textContent = m.q ? "❓ 改问题" : "❓ 提问";
+      qb.dataset.askmk = String(x.i);
+      d.appendChild(qb);
+      var db = document.createElement("button");
+      db.className = "del"; db.textContent = "🗑";
+      db.dataset.delmk = String(x.i);
+      d.appendChild(db);
+      if (m.q){
+        var t = document.createElement("div");
+        t.className = "qtext"; t.textContent = m.q;
+        d.appendChild(t);
+      }
+      layer.appendChild(d);
+    });
+    renderList();
+  }
+
+  function renderList(){
+    var box = document.getElementById("mklist");
+    var all = marks();
+    document.getElementById("mkcount").textContent =
+      all.length ? ("已标记 " + all.length + " 处（其中提问 " +
+                    all.filter(function(m){ return m.q; }).length + " 条）") : "";
+    if (!all.length){ box.innerHTML = '<div class="hint">还没有标记。在课件上拖一个框试试。</div>'; return; }
+    box.innerHTML = "";
+    all.slice().sort(function(a, b){ return a.p - b.p; }).forEach(function(m){
+      var row = document.createElement("div");
+      row.className = "mkitem";
+      var a = document.createElement("a");
+      a.textContent = "第 " + m.p + " 页"; a.dataset.gopage = String(m.p);
+      var p = document.createElement("span"); p.className = "p"; p.appendChild(a);
+      var s = document.createElement("span");
+      s.innerHTML = m.q ? ('<span class="q">❓ ' + esc(m.q) + "</span>")
+                        : "⭐ 标记（未提问）";
+      row.appendChild(p); row.appendChild(s);
+      box.appendChild(row);
+    });
+  }
+
+  function esc(s){
+    return String(s).replace(/[&<>"]/g, function(c){
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+    });
+  }
+
+  function hideEditor(){ document.getElementById("editor").classList.remove("on"); editorFor = -1; }
+
+  function showEditor(i, x, y){
+    var m = marks()[i]; if (!m) return;
+    editorFor = i;
+    var ed = document.getElementById("editor");
+    var ta = ed.querySelector("textarea");
+    ta.value = m.q || "";
+    ed.style.left = Math.min(x, window.innerWidth - 360) + "px";
+    ed.style.top = Math.min(y, window.innerHeight - 200) + "px";
+    ed.classList.add("on");
+    ta.focus();
+  }
+
+  // ---- 拖框 ----
+  layer.addEventListener("pointerdown", function(e){
+    if (e.target !== layer) return;
+    var b = layer.getBoundingClientRect();
+    drag = { x0: (e.clientX - b.left) / b.width * 100,
+             y0: (e.clientY - b.top) / b.height * 100, el: null };
+    layer.setPointerCapture(e.pointerId);
+  });
+  layer.addEventListener("pointermove", function(e){
+    if (!drag) return;
+    var b = layer.getBoundingClientRect();
+    var x = (e.clientX - b.left) / b.width * 100;
+    var y = (e.clientY - b.top) / b.height * 100;
+    if (!drag.el){
+      drag.el = document.createElement("div");
+      drag.el.className = "mk";
+      layer.appendChild(drag.el);
+    }
+    var l = clamp(Math.min(drag.x0, x), 0, 100), t = clamp(Math.min(drag.y0, y), 0, 100);
+    var w = clamp(Math.abs(x - drag.x0), 0, 100 - l), h = clamp(Math.abs(y - drag.y0), 0, 100 - t);
+    drag.el.style.left = l + "%"; drag.el.style.top = t + "%";
+    drag.el.style.width = w + "%"; drag.el.style.height = h + "%";
+    drag.rect = [l, t, w, h];
+  });
+  layer.addEventListener("pointerup", function(e){
+    if (!drag) return;
+    var r = drag.rect;
+    // 太小的框多半是误触，丢掉（课件页上真实的标记区总是有点面积）
+    if (r && r[2] > 1.5 && r[3] > 1.5){
+      marks().push({ p: cur + 1, r: r.map(function(v){ return Math.round(v * 10) / 10; }),
+                     q: "", t: new Date().toISOString().slice(0, 16).replace("T", " ") });
+      save();
+    }
+    drag = null; render();
+  });
+
+  document.addEventListener("click", function(e){
+    var t = e.target;
+    if (t.dataset && t.dataset.askmk !== undefined){
+      var r = t.closest(".mk").getBoundingClientRect();
+      showEditor(parseInt(t.dataset.askmk, 10), r.left, r.bottom + 8);
+      return;
+    }
+    if (t.dataset && t.dataset.delmk !== undefined){
+      marks().splice(parseInt(t.dataset.delmk, 10), 1);
+      save(); render(); return;
+    }
+    if (t.dataset && t.dataset.gopage !== undefined){
+      go(parseInt(t.dataset.gopage, 10) - 1); return;
+    }
+    if (t.id === "savemk"){ commitEditor(); return; }
+    if (t.id === "cancelmk"){ hideEditor(); return; }
+    if (t.id === "prev"){ go(cur - 1); return; }
+    if (t.id === "next"){ go(cur + 1); return; }
+    if (t.id === "expbtn"){ exportLog(); return; }
+    if (t.id === "clrpage"){
+      var p = cur + 1;
+      st.__marks = marks().filter(function(m){ return m.p !== p; });
+      save(); render(); return;
+    }
+  });
+
+  function commitEditor(){
+    if (editorFor < 0) return;
+    var v = document.getElementById("editor").querySelector("textarea").value.trim();
+    marks()[editorFor].q = v;
+    save(); hideEditor(); render();
+  }
+
+  document.addEventListener("keydown", function(e){
+    if (e.target.tagName === "TEXTAREA") {
+      if (e.key === "Escape") hideEditor();
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEditor();
+      return;
+    }
+    if (e.key === "ArrowLeft") go(cur - 1);
+    if (e.key === "ArrowRight") go(cur + 1);
+  });
+
+  function exportLog(){
+    var lesson = document.body.dataset.lesson || "lesson";
+    var out = { lesson: lesson, title: document.title, mode: "survey",
+                exported_at: new Date().toISOString(), marks: marks() };
+    var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "study-" + lesson.replace(/[^0-9A-Za-z\\u4e00-\\u9fff]+/g, "_") + ".json";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+    var b = document.getElementById("expbtn");
+    if (b){ b.textContent = "已导出"; setTimeout(function(){ b.textContent = "导出我的标记与提问"; }, 1800); }
+  }
+
+  window.addEventListener("load", function(){
+    var m = /^#p(\\d+)$/.exec(location.hash || "");
+    go(m ? parseInt(m[1], 10) - 1 : 0);
+  });
+  if (document.readyState === "complete") {
+    var m0 = /^#p(\\d+)$/.exec(location.hash || "");
+    go(m0 ? parseInt(m0[1], 10) - 1 : 0);
+  }
+})();
+"""
+
+
+def build_survey(course_label: str, chapter: dict, pages: list[dict],
+                 html_name: str = "") -> str:
+    """生成「过课件」页：翻页看原件 + 拖框标记 + 框上提问。
+
+    这一页**不出题、不给答案、不提炼** —— 它的唯一目的是让你产生两种信号：
+    「这里重要」（划线，零成本）与「这里我不懂」（提问，要打字）。
+    这两种信号随后会随导出的 JSON 进账本，并**支配**后面两步：
+    知识点会标注"你在这一页标记过 N 处"，问题清单位居库的主入口。
+    """
+    import json as _json
+    plist = [{"n": p["no"], "src": p["src"]} for p in pages if p.get("src")]
+    if not plist:
+        plist = [{"n": 0, "src": ""}]
+    lesson_id = f"{course_label}:{chapter.get('id')}:{html_name or 'survey'}:survey"
+    outline = chapter.get("outline") or {}
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>过课件 · {esc(outline.get('title') or chapter.get('label') or course_label)}</title>
+<style>{_SURVEY_CSS}</style>
+</head>
+<body data-lesson="{esc(lesson_id)}" data-mode="survey">
+
+<div class="bar">
+  <button id="prev">‹ 上一页</button>
+  <b id="pno">1 / {len(plist)}</b>
+  <button id="next">下一页 ›</button>
+  <span class="hint">← → 翻页 · <b>在课件上拖一个框 = 标记</b> · 框上点 <b>❓</b> = 提问</span>
+  <span class="hint" id="mkcount"></span>
+  <button id="clrpage">清空本页标记</button>
+  <button id="expbtn" class="primary">导出我的标记与提问</button>
+</div>
+
+<div class="stage">
+  <div class="pg">
+    <img id="pimg" alt="课件页">
+    <div class="layer" id="layer"></div>
+  </div>
+  <div class="hint" style="margin-top:10px">
+    这一页**不问你、不给答案** —— 就是把课件过一遍，看到重要的拖个框，不懂的点 ❓。
+    全过完之后，导出去，程序会把你的标记和问题带进后面的知识点与课里。
+  </div>
+</div>
+
+<div class="mkbox">
+  <h2>我标记过的（点页码跳过去）</h2>
+  <div id="mklist"></div>
+</div>
+
+<div id="editor">
+  <textarea placeholder="这里你想问什么？（Ctrl+Enter 保存，Esc 取消）"></textarea>
+  <div class="row">
+    <button id="cancelmk">取消</button>
+    <button id="savemk" class="primary">保存问题</button>
+  </div>
+</div>
+
+<script>window.__PAGES__ = {_json.dumps(plist, ensure_ascii=False)};</script>
+<script>{_SURVEY_JS}</script>
+</body>
+</html>
+"""
+
+
+def clean_orphans(lessons_dir: str, produced: set[str], mode: str) -> int:
+    """删掉 `lessons/` 里**同一课型**的孤儿课文件，返回删除个数。
+
+    ★ 回归（真实事故）：早先的逻辑是"本次没产出的一律删"。跑一次
+    `--mode survey`（整讲只出 1 页）时，它**把 15 节 ask-first 课全删了**。
+
+    多种课型是**并存互不覆盖**的设计（文件名与 localStorage 键都带课型），
+    所以清理也必须按课型分开 —— 课型写在每个文件自己的 `data-mode` 上。
+    只读文件头 4KB 判断，不去解析整个 HTML。
+    """
+    n = 0
+    if not os.path.isdir(lessons_dir):
+        return 0
+    tag = f'data-mode="{mode}"'
+    for fn in sorted(os.listdir(lessons_dir)):
+        fp = os.path.join(lessons_dir, fn)
+        if not fn.lower().endswith(".html"):
+            continue
+        if os.path.normcase(os.path.abspath(fp)) in produced:
+            continue
+        try:
+            head = open(fp, encoding="utf-8", errors="replace").read(4000)
+        except OSError:
+            continue
+        if tag in head:
+            os.remove(fp)
+            n += 1
+    return n
+
+
 def _answer_block(k: dict) -> str:
     pts = k.get("points") or []
     if not pts:
@@ -635,7 +1010,7 @@ def _question(qtext: str, qid: str, answer_html: str, mode: str = MODE_ASK) -> s
 
 
 def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
-                mode: str = MODE_ASK) -> str:
+                mode: str = MODE_ASK, mk: dict | None = None) -> str:
     label = esc(k.get("label"))
     tags = []
     imp = {"must": "必须掌握", "key": "重点", "freq": "常考"}.get(k.get("importance") or "")
@@ -643,6 +1018,20 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
         tags.append(f'<span class="tag">{esc(imp)}</span>')
     if k.get("is_hub"):
         tags.append('<span class="tag hub">枢纽</span>')
+
+    # ★ 第一遍的产出支配这一步：你在过课件时对这一页划过线 / 提过问，
+    #   就显示在这里。让他一眼看到"这块是我自己觉得重要的"，
+    #   而不是只有程序判定的"必须掌握/枢纽"。
+    badge = ""
+    if mk and mk.get("n"):
+        q = mk.get("q") or 0
+        badge = (f'<div class="minebadge">✍️ 你在第 {page} 页标记过 '
+                 f'<b>{mk["n"]}</b> 处'
+                 + (f'，其中提问 <b>{q}</b> 条' if q else "")
+                 + "</div>")
+        for m in (mk.get("marks") or []):
+            if m.get("q"):
+                badge += f'<div class="mineq">❓ {esc(m["q"])}</div>'
 
     qs = list(k.get("self_test") or [])
     ans = _answer_block(k)
@@ -687,6 +1076,7 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
     return f"""<section class="{cls}" id="kc{i}">
   <div class="kcno">第 {i} 个知识点 · {esc(k.get('type') or '')}</div>
   <h2>{label}{''.join(tags)}</h2>
+  {badge}
   {body}
 </section>"""
 
@@ -723,7 +1113,8 @@ def _upload_section(n_kc: int, n_q: int) -> str:
 
 
 def build_lesson(course_label: str, chapter: dict, part: str,
-                 kc_list: list[dict], img_rel_of, mode: str = MODE_ASK) -> str:
+                 kc_list: list[dict], img_rel_of, mode: str = MODE_ASK,
+                 marks_by_page: dict | None = None) -> str:
     """生成一节 HTML 课。`img_rel_of(kc) -> (相对路径 or None, 页号)`。"""
     if mode not in MODES:
         mode = MODE_ASK
@@ -739,9 +1130,31 @@ def build_lesson(course_label: str, chapter: dict, part: str,
                      + esc("；".join(goals)) + "</div>")
 
     secs = []
+    n_marked = 0
     for i, k in enumerate(kc_list, 1):
         rel, page = img_rel_of(k)
-        secs.append(_kc_section(i, k, rel, page, mode))
+        mk = (marks_by_page or {}).get(int(page or 0))
+        if mk:
+            n_marked += 1
+        secs.append(_kc_section(i, k, rel, page, mode, mk))
+
+    # 你自己划过线的页 —— 放在最上面。第一遍的产出**支配**这一步，
+    # 而不是被埋在笔记第 40 行（这正是用户说"先看课件"时真正想要的东西）。
+    mine_html = ""
+    if marks_by_page:
+        rows = []
+        for k in kc_list:
+            _rel, page = img_rel_of(k)
+            mk = marks_by_page.get(int(page or 0))
+            if mk:
+                rows.append((page, k.get("label"), mk))
+        if rows:
+            mine_html = ('<div class="goal" style="border-left-color:#b45309">'
+                         '<b>你自己划过的线（过课件时标记的）：</b>'
+                         + "；".join(f'第 {p} 页 {esc(lb)}（{m["n"]} 处'
+                                     + (f'，提问 {m["q"]} 条' if m.get("q") else "")
+                                     + "）" for p, lb, m in rows)
+                         + "</div>")
 
     # 收尾：把这一节的问题再列一遍（问题为第一等公民）
     all_q = [(k.get("label"), q) for k in kc_list for q in (k.get("self_test") or [])]
@@ -773,6 +1186,7 @@ def build_lesson(course_label: str, chapter: dict, part: str,
   <h1>{esc(title)}</h1>
   <div class="hint">{howto}</div>
   {goal_html}
+  {mine_html}
   <div class="bar"><i></i></div>
   <div class="stat"><span class="done">0 / {n_q} 题已自评</span>
     <span>进度只存在本机浏览器里</span></div>

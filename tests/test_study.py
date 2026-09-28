@@ -193,7 +193,72 @@ fresh = S.load_study(LIB)
 check("  而且好的那几份照样并进来了",
       "L3" in fresh["lessons"] and "L4" in fresh["lessons"], str(sorted(fresh["lessons"])))
 
-# ---------------------------------------------------------------- 6 幂等 + 汇总
+# ---------------------------------------------------------------- 6b 课件标记（划线）
+
+# ★ 先 reload 拿最新的（`merge_file` 是自己 load→改→save 的，内存里的 d 早已过期），
+#   改完再 save。少了 reload 会抹掉别人写的；少了 save 会丢掉自己写的。
+d = S.load_study(LIB)
+
+# 用户原话：「我希望我可以先看课件，**划线记笔记问问题**」。
+# 划线与提问是两种信号（划线 = 这里重要、零成本、量大；提问 = 这里不懂、要打字、量小）。
+rep7 = S.import_export(LIB, d, {
+    "lesson": "L5", "mode": "survey", "exported_at": "2026-02-01T10:00:00",
+    "marks": [
+        {"p": 25, "r": [10.0, 20.0, 30.0, 8.0], "q": ""},
+        {"p": 27, "r": [5.0, 40.0, 44.0, 12.0], "q": "脂筏算不算细胞器？"},
+        {"p": 27, "r": [8.5, 60.1, 50.2, 9.9], "q": ""},
+    ],
+})
+check("★ 课件标记进账本（划线 + 提问两种都收）",
+      len(d["lessons"]["L5"]["marks"]) == 3, str(d["lessons"]["L5"]["marks"]))
+check("  坐标被规整到一位小数", d["lessons"]["L5"]["marks"][2]["r"] == [8.5, 60.1, 50.2, 9.9])
+check("  报告区分了「共几处」与「其中几条提问」",
+      any("新增 3 处" in r and "累计提问 1 条" in r for r in rep7), str(rep7))
+
+# 重复导入（他整本重导是常态）
+rep8 = S.import_export(LIB, d, {
+    "lesson": "L5", "mode": "survey", "exported_at": "2026-02-02T10:00:00",
+    "marks": [
+        {"p": 25, "r": [10.0, 20.0, 30.0, 8.0], "q": ""},
+        {"p": 27, "r": [5.0, 40.0, 44.0, 12.0], "q": "脂筏算不算细胞器？"},
+    ],
+})
+check("★ 同一批标记重复导入：0 新增、全部跳过",
+      any("新增 0 处" in r and "重复跳过 2 处" in r for r in rep8), str(rep8))
+check("★ 重复导入后标记数不变", len(d["lessons"]["L5"]["marks"]) == 3)
+
+# 同一个框但改了问题 → 应当**算新的一条**（问题是不同的信号）
+S.import_export(LIB, d, {
+    "lesson": "L5", "mode": "survey", "exported_at": "2026-02-03T10:00:00",
+    "marks": [{"p": 27, "r": [5.0, 40.0, 44.0, 12.0], "q": "换了个问法：为什么？"}],
+})
+check("★ 同一个框改了问题 → 算新的一条（问题不同就是不同信号）",
+      len(d["lessons"]["L5"]["marks"]) == 4, str(len(d["lessons"]["L5"]["marks"])))
+
+# 坏数据
+rep9 = S.import_export(LIB, d, {
+    "lesson": "L6", "mode": "survey", "exported_at": "2026-02-04T10:00:00",
+    "marks": ["裸字符串", {"p": "不是数字", "r": [1, 2, 3, 4]},
+              {"p": 3, "r": [1, 2, 3]}, {"p": 3, "r": [1, 2, 3, 4], "q": "好的这条"}],
+})
+check("★ 坏标记全部拒收且如实报数（只有一条有效）",
+      len(d["lessons"]["L6"]["marks"]) == 1 and any("坏数据 3 条" in r for r in rep9),
+      f"{d['lessons']['L6']['marks']} | {rep9}")
+
+# ---------------------------------------------------------------- 6c 按页汇总 + 汇总文案
+
+S.save_study(LIB, d)        # 6b 的三次 import_export 改在内存 d 上，这里落盘
+bp = S.marks_by_page(LIB)
+check("★ marks_by_page 按页汇总（第 27 页有 3 处、其中 2 条提问）",
+      bp.get(27, {}).get("n") == 3 and bp.get(27, {}).get("q") == 2, str(bp.get(27)))
+check("  跨小节汇总（L5 与 L6 都算进来）", 3 in bp and bp[3]["n"] == 1, str(sorted(bp)))
+sm = S.summarize(LIB)
+check("★ 汇总里单列课件标记（不与自评混在一起）",
+      any("课件标记" in x for x in sm), str(sm))
+check("  并能报出标记最多的页",
+      any("标记最多的页" in x for x in sm), str(sm))
+
+# ---------------------------------------------------------------- 7 幂等 + 汇总
 
 before = open(S.study_ledger_path(LIB), encoding="utf-8").read()
 S.merge_file(LIB, TMPD)

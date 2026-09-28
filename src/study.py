@@ -51,6 +51,14 @@ def load_study(library_root: str) -> dict:
 
 
 def save_study(library_root: str, data: dict) -> None:
+    """整份覆盖写。
+
+    ⚠️ **不要拿过期的内存副本调它。** `merge_file` / `import_export` 是自己
+    `load → 改 → save` 的；它们跑完之后，你手上那份 `data` 就是过期的，
+    再 `save_study` 会把期间的写入**整段抹掉**（实测踩到：测试里拿旧副本写，
+    把先前合并进去的两节覆盖没了）。
+    要改账本，要么用 `merge_file`，要么先 `load_study` 拿最新的再改。
+    """
     data["version"] = 1
     atomic_write_json(study_ledger_path(library_root), data)
 
@@ -210,7 +218,69 @@ def import_export(library_root: str, data: dict, payload: dict) -> list[str]:
     if shots:
         report.append(f"[study] 手写解答：新增 {added} 张、"
                       f"重复跳过 {dup} 张" + (f"、坏数据 {bad} 条" if bad else ""))
+
+    # ---- 过课件的标记与提问（划线信号）----
+    # 用户原话：「我希望我可以先看课件，**划线记笔记问问题**」。
+    # 划线与提问是两种不同的信号：划线 = 「这里重要」（他的判断，零成本，量最大）；
+    # 提问 = 「这里我不懂」（他的缺口，要打字，量小）。两种都收下。
+    marks = payload.get("marks") or []
+    if marks:
+        m_list = rec.setdefault("marks", [])
+        seen_m = {(x.get("p"), tuple(x.get("r") or []), x.get("q") or "") for x in m_list}
+        m_add = m_dup = m_bad = 0
+        for m in marks:
+            if not isinstance(m, dict):
+                m_bad += 1
+                continue
+            try:
+                pg = int(m.get("p"))
+            except (TypeError, ValueError):
+                m_bad += 1
+                continue
+            r = m.get("r") or []
+            if not (isinstance(r, list) and len(r) == 4):
+                m_bad += 1
+                continue
+            try:
+                r = [round(float(v), 1) for v in r]
+            except (TypeError, ValueError):
+                m_bad += 1
+                continue
+            q = str(m.get("q") or "").strip()
+            key = (pg, tuple(r), q)
+            if key in seen_m:
+                m_dup += 1
+                continue
+            m_list.append({"p": pg, "r": r, "q": q, "at": str(m.get("t") or orig)})
+            seen_m.add(key)
+            m_add += 1
+        report.append(f"[study] 课件标记：新增 {m_add} 处"
+                      f"（累计提问 {sum(1 for x in m_list if x.get('q'))} 条）、"
+                      f"重复跳过 {m_dup} 处"
+                      + (f"、坏数据 {m_bad} 条" if m_bad else ""))
     return report
+
+
+def marks_by_page(library_root: str) -> dict[int, dict]:
+    """跨全部小节汇总「每页被标记了几处、其中几条是提问」。
+
+    这是**第一遍的产出支配后面流程**的依据：知识点会标注"你在这一页标记过 N 处"，
+    问题清单可以按标记数排序 ——「你划过线的地方」比"页序"更能说明该先学什么。
+    """
+    data = load_study(library_root)
+    out: dict[int, dict] = {}
+    for v in (data.get("lessons") or {}).values():
+        for m in v.get("marks") or []:
+            try:
+                pg = int(m.get("p"))
+            except (TypeError, ValueError):
+                continue
+            d = out.setdefault(pg, {"n": 0, "q": 0, "marks": []})
+            d["n"] += 1
+            if m.get("q"):
+                d["q"] += 1
+            d["marks"].append(m)
+    return out
 
 
 def merge_file(library_root: str, path: str) -> list[str]:
@@ -263,10 +333,20 @@ def summarize(library_root: str) -> list[str]:
     pct = (cnt["ok"] * 100 // tot) if tot else 0
     out = [f"学习记录：{len(lessons)} 节课 · {tot} 条自评"
            f"（会 {cnt['ok']} / 不确定 {cnt['mid']} / 不会 {cnt['no']}，会 {pct}%）"]
+    # 划线信号单列 —— 它是数量最大、门槛最低的一类，别混在自评里
+    bp = marks_by_page(library_root)
+    if bp:
+        n_m = sum(v["n"] for v in bp.values())
+        n_q = sum(v["q"] for v in bp.values())
+        top = sorted(bp.items(), key=lambda kv: -kv[1]["n"])[:5]
+        out.append(f"  课件标记：{n_m} 处 · 涉及 {len(bp)} 页 · 其中提问 {n_q} 条"
+                   f"（标记最多的页："
+                   + "、".join(f"第 {p} 页×{v['n']}" for p, v in top) + "）")
     for k, v in sorted(lessons.items()):
         g = v.get("grades") or {}
         n_ok = sum(1 for x in g.values() if x == "ok")
         out.append(f"  {v.get('title') or k}：{len(g)} 条自评"
                    f"（会 {n_ok}）· 追问 {len(v.get('asks') or [])} · "
-                   f"手写 {len(v.get('shots') or [])} 张")
+                   f"手写 {len(v.get('shots') or [])} 张 · "
+                   f"课件标记 {len(v.get('marks') or [])} 处")
     return out
