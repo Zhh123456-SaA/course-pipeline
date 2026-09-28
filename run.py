@@ -37,6 +37,7 @@ import kcs as kcs_mod  # noqa: E402
 import lesson_html  # noqa: E402
 import libroot  # noqa: E402
 import pdf_source  # noqa: E402
+import study  # noqa: E402
 import source_ingest  # noqa: E402
 import qa  # noqa: E402
 import render  # noqa: E402
@@ -631,6 +632,26 @@ def cmd_lesson(course: str, only: str | None = None,
     return report
 
 
+# ---------------------------------------------------------------- study（学习记录）
+
+def cmd_study(course: str, import_path: str | None = None) -> list[str]:
+    """把 HTML 课里的作答**收进账本**；不带 --import 时只汇报攒了多少。
+
+    为什么必须有这一步：课里的三档自评、手写解答、框选提问原本**只活在浏览器的
+    localStorage 里** —— 导出成 JSON 落到下载目录就没人管了。
+    那与本项目「账本是唯一真相源」的铁律直接冲突，而且：
+      · 用户砍掉「今日学习清单」的根因就是"没有掌握度数据"；
+      · L2「AI 读你的推导」需要图先进账本才读得到。
+    """
+    root = course_root(course)
+    if import_path:
+        # study.* 要的是**课程根目录**（它自己拼 .ledger/study.json 与 study/shots/），
+        # 不是 .ledger 目录本身 —— 别把 led.root 传进去
+        lines = study.merge_file(root, import_path)
+        return lines + study.summarize(root)
+    return study.summarize(root)
+
+
 # ---------------------------------------------------------------- check
 
 def cmd_check(course: str) -> list[str]:
@@ -656,6 +677,10 @@ def cmd_check(course: str) -> list[str]:
         ok_img = "OK " if n_img >= rec["page_count"] else "MISS"
         out.append(f"  {stem:16s} pages={ok_pages} note={ok_note} "
                    f"images={ok_img}({n_img}/{rec['page_count']})")
+    # 学习记录（自评 / 追问 / 手写解答）也纳入体检 —— 它现在是最有价值的数据，
+    # 而"存在浏览器里"的东西最容易悄悄没有
+    for line in study.summarize(root):
+        out.append("  " + line)
     return out
 
 
@@ -703,6 +728,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="cards 动作：先清空牌组并重置账本，再全部重建（规则变更后用）")
     ap.add_argument("--sync", action="store_true",
                     help="cards 动作：把卡片推进 Anki（需 Anki 已打开）")
+    ap.add_argument("--import", dest="import_path", default=None,
+                    help="study 动作：导入 HTML 课「导出我的作答」生成的 "
+                         "study-*.json（给文件或目录都行）")
     ap.add_argument("--mode", default="ask-first",
                     choices=["ask-first", "teach-first"],
                     help="lesson 动作：ask-first=先问后看（记忆型，如生物）；"
@@ -712,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
                          "缺省则每个部分各生成一节")
     ap.add_argument("action",
                     choices=["ingest", "render", "archive", "cards", "kcs",
-                             "lesson", "all", "check", "clean"])
+                             "lesson", "study", "all", "check", "clean"])
     args = ap.parse_args(argv)
 
     lines: list[str] = []
@@ -727,6 +755,8 @@ def main(argv: list[str] | None = None) -> int:
         lines += cmd_kcs(args.course, window=args.window, ai=not args.no_ai)
     if args.action == "lesson":
         lines += cmd_lesson(args.course, only=args.part, mode=args.mode)
+    if args.action == "study":
+        lines += cmd_study(args.course, import_path=args.import_path)
     if args.action in ("cards",):
         lines += cmd_cards(args.course, sync=args.sync, rebuild=args.rebuild,
                            ai=not args.no_ai, prune=args.prune)
