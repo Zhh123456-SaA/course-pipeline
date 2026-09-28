@@ -548,6 +548,19 @@ def cmd_lesson(course: str, only: str | None = None,
     for ch in chapters:
         stem = ch.get("id")
         slug = slugs.get(stem)
+        # ★ 页图的**真实文件名**必须先查出来，不能猜扩展名。
+        #   实测事故：PDF 出 `.png`、Office 出 `.jpg`，而生成器写死了 `.jpg` ——
+        #   于是**所有 PDF 课程的课全是破图**（物理 15 节 56 张、线代 5 节 16 张），
+        #   而且不报错、不失败：用户打开只看到"课件第 N 页"下面空着。
+        asset_dir = os.path.join(root, "assets", slug) if slug else ""
+        page_file: dict[int, str] = {}
+        if asset_dir and os.path.isdir(asset_dir):
+            for fn in os.listdir(asset_dir):
+                m = re.fullmatch(r"p(\d+)\.(png|jpe?g|webp)", fn, re.I)
+                if m:
+                    page_file[int(m.group(1))] = fn
+        miss_img: list[int] = []
+
         parts = (ch.get("outline") or {}).get("parts") or []
         # 没有导览结构时，把全部知识点当成一节
         names = [p["label"] for p in parts] or ["全部"]
@@ -564,12 +577,15 @@ def cmd_lesson(course: str, only: str | None = None,
             titles = lesson_html.lesson_names(part, len(chunks))
 
             for title, picked in zip(titles, chunks):
-                def img_of(k, _slug=slug):
+                def img_of(k, _slug=slug, _pf=page_file, _miss=miss_img):
                     pg = int(k.get("page") or 0)
-                    if not _slug or not pg:
+                    fn = _pf.get(pg)
+                    if not _slug or not fn:
+                        if pg:
+                            _miss.append(pg)
                         return None, pg
                     # HTML 在 <课程>/lessons/ 下，页图在 <课程>/assets/<slug>/
-                    return f"../assets/{_slug}/p{pg:03d}.jpg", pg
+                    return f"../assets/{_slug}/{fn}", pg
 
                 html_text = lesson_html.build_lesson(
                     course, ch, title, picked, img_of, mode=mode)
@@ -583,6 +599,13 @@ def cmd_lesson(course: str, only: str | None = None,
                 n_q += nq
                 report.append(f"[lesson] {os.path.relpath(p, root)}  "
                               f"{len(picked)} 个知识点 · {nq} 道题")
+
+        # 找不到页图必须**大声报**，不能默默少一张图（这次就是默默全丢）
+        if miss_img:
+            uniq = sorted(set(miss_img))
+            report.append(f"[warn ] {stem}：有 {len(uniq)} 个知识点找不到页图"
+                          f"（第 {uniq[:8]}{'…' if len(uniq) > 8 else ''} 页），"
+                          f"课里对应位置会没有课件原页。检查 assets/ 是否渲染全了。")
 
     # 清掉上次留下的孤儿课：分节规则一变（比如"一个部分装不下就拆成 1/2、2/2"），
     # 旧文件名就没人认领了。`lessons/` 是程序独占目录，可以清。

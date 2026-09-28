@@ -196,12 +196,15 @@ section.kc.teach h2{margin-bottom:8px}
   color:var(--dim);font-size:14px;cursor:pointer;background:var(--bg);margin-top:10px}
 .drop:hover,.drop.over{border-color:var(--acc);color:var(--acc)}
 .drop input{display:none}
-.shot{margin-top:10px;position:relative}
+.shot{margin-top:12px;position:relative}
 .shot img{max-width:100%;border:1px solid var(--line);border-radius:8px;cursor:zoom-in;
   display:block;background:#fff}
 .shot .del{position:absolute;top:6px;right:6px;font-size:12px;padding:3px 9px;
   background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:6px;cursor:pointer}
 .shot .del:hover{background:rgba(180,0,0,.85);color:#fff}
+.shotnote{width:100%;margin-top:6px;padding:7px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--card);color:var(--fg);font:inherit;font-size:14px}
+.shotnote:focus{outline:2px solid var(--acc);outline-offset:1px;border-color:transparent}
 .hint{font-size:13px;color:var(--dim)}
 .answer{display:none;margin-top:12px;padding:12px 14px;border-left:3px solid var(--acc);
   background:var(--acc2);border-radius:0 8px 8px 0;font-size:15px}
@@ -338,16 +341,17 @@ _JS = """
     var lesson = document.body.dataset.lesson || "lesson";
     var out = { lesson: lesson, title: document.title, mode: document.body.dataset.mode || "",
                 exported_at: new Date().toISOString(),
-                grades: {}, answers: {}, shots: {}, asks: st.__asks || [] };
+                grades: {}, answers: {}, asks: st.__asks || [] };
     document.querySelectorAll(".q").forEach(function(q){
       var id = q.dataset.q;
       if (st[id]) out.grades[id] = st[id];
       var ta = q.querySelector("textarea");
       var v = ta && ta.value ? ta.value.trim() : "";
       if (v) out.answers[id] = v;
-      var sp = st["__shots:" + id];
-      if (sp && sp.length) out.shots[id] = sp;   // 图直接进 JSON（自包含，方便存档）
     });
+    // 解答图：一个列表，每张带可选标注（"这张是哪几题"）
+    var sp = shots();
+    if (sp.length) out.shots = sp;
     var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -395,11 +399,10 @@ _JS = """
       t.textContent = "已复制"; setTimeout(function(){ t.textContent = "复制全部"; }, 1200);
       return;
     }
-    if (t.id === "expbtn"){ exportLog(); return; }
+    if (t.id === "expbtn" || t.id === "expbtn2"){ exportLog(); return; }
     if (t.dataset && t.dataset.delshot){
-      var arr = st["__shots:" + t.dataset.delshot] || [];
-      arr.splice(parseInt(t.dataset.idx, 10), 1);
-      if (!arr.length) delete st["__shots:" + t.dataset.delshot];
+      var arr = shots();
+      arr.splice(parseInt(t.dataset.delshot, 10), 1);
       save(); renderShots();
       return;
     }
@@ -428,7 +431,9 @@ _JS = """
 
   function usedBytes(){
     var n = 0;
-    for (var k in st) if (k.indexOf("__shots") === 0) n += String(st[k]).length;
+    (st.__shots || []).forEach(function(it){
+      n += String(it.d || "").length + String(it.n || "").length;
+    });
     return n;
   }
 
@@ -454,42 +459,56 @@ _JS = """
     fr.readAsDataURL(file);
   }
 
-  function addShot(qid, dataUrl){
+  // ★ 全部解答**一次传完**（用户原话：「我希望所有问题我可以在最后一次上传，
+  //   每个问题平板导出很烦很影响效率」）。所以不是每题一个上传框，
+  //   而是页面末尾一个统一区，图存成**一个列表**，每张可选用文字标一下对应哪几题。
+  function shots(){ return st.__shots || (st.__shots = []); }
+
+  function addShot(dataUrl, note){
     if (!dataUrl) return;
     if (usedBytes() + dataUrl.length > SHOT_BUDGET){
-      alert("本机存储快满了（浏览器的 5MB 上限）。请先点「导出我的作答」把已贴的图导出去，再继续。");
+      alert("本机存储快满了（浏览器 5MB 上限）。先点「导出我的作答」把已贴的图导出去，再继续。");
       return;
     }
-    var box = st["__shots:" + qid] || (st["__shots:" + qid] = []);
-    box.push(dataUrl);
+    shots().push({ d: dataUrl, n: note || "" });
     save(); renderShots();
   }
 
   function renderShots(){
-    document.querySelectorAll(".q").forEach(function(q){
-      var box = q.querySelector("[data-shots]");
-      if (!box) return;
-      var list = st["__shots:" + q.dataset.q] || [];
-      box.innerHTML = "";
-      list.forEach(function(u, i){
-        var wrap = document.createElement("div");
-        wrap.className = "shot";
-        var im = document.createElement("img");
-        im.src = u; wrap.appendChild(im);
-        var del = document.createElement("button");
-        del.className = "del"; del.textContent = "删掉这张";
-        del.dataset.delshot = q.dataset.q; del.dataset.idx = String(i);
-        wrap.appendChild(del);
-        box.appendChild(wrap);
-      });
+    var box = document.querySelector("#shotlist");
+    if (!box) return;
+    var list = shots();
+    box.innerHTML = "";
+    list.forEach(function(it, i){
+      var wrap = document.createElement("div");
+      wrap.className = "shot";
+      var im = document.createElement("img");
+      im.src = it.d; wrap.appendChild(im);
+      var del = document.createElement("button");
+      del.className = "del"; del.textContent = "删掉这张";
+      del.dataset.delshot = String(i);
+      wrap.appendChild(del);
+      // 可选的标注：不强制对应，他在纸上自己会写题号
+      var cap = document.createElement("input");
+      cap.type = "text"; cap.className = "shotnote";
+      cap.placeholder = "这张是哪几题？（可不填）";
+      cap.value = it.n || "";
+      cap.dataset.shotnote = String(i);
+      wrap.appendChild(cap);
+      box.appendChild(wrap);
     });
+    var c = document.querySelector("#shotcount");
+    if (c) c.textContent = list.length ? ("已贴 " + list.length + " 张") : "";
   }
 
-  function handleFiles(qid, files){
+  function handleFiles(files){
+    var n = (files || []).length;
     Array.prototype.forEach.call(files || [], function(f){
       if (!f || !/^image\\//.test(f.type || "")) return;
-      shrink(f, function(u){ addShot(qid, u); });
+      shrink(f, function(u){ addShot(u, ""); });   // 注意：不传题号，一次全收
     });
+    var tip = document.querySelector("#shottip");
+    if (tip && n) tip.textContent = "正在处理 " + n + " 张…";
   }
 
   // 拖进来 / 粘进来
@@ -506,20 +525,8 @@ _JS = """
     var d = e.target.closest && e.target.closest("[data-drop]");
     if (!d) return;
     e.preventDefault(); d.classList.remove("over");
-    var q = d.closest(".q");
-    handleFiles(q.dataset.q, e.dataTransfer && e.dataTransfer.files);
+    handleFiles(e.dataTransfer && e.dataTransfer.files);
   });
-  // 记录「最后点过的那一题」—— 粘贴/拖入都贴到它，不弹窗问、不猜第一题
-  var lastQ = null;
-  document.addEventListener("click", function(e){
-    var q = e.target.closest && e.target.closest(".q");
-    if (q && !(e.target.closest && e.target.closest("textarea"))) {
-      lastQ = q;
-      document.querySelectorAll(".q").forEach(function(x){
-        x.style.outline = (x === q) ? "2px solid var(--acc)" : "";
-      });
-    }
-  }, true);
 
   document.addEventListener("paste", function(e){
     var items = (e.clipboardData && e.clipboardData.items) || [];
@@ -530,20 +537,21 @@ _JS = """
       }
     }
     if (!files.length) return;
-    var q = lastQ || document.querySelector(".q");
-    if (!q) return;
+    if (!document.querySelector("[data-drop]")) return;   // 记忆型课没有上传区
     e.preventDefault();
-    handleFiles(q.dataset.q, files);
-    var tip = q.querySelector(".graded");
-    if (tip){ tip.textContent = "已贴 " + files.length + " 张"; }
+    handleFiles(files);
   });
 
   document.addEventListener("change", function(e){
     var inp = e.target;
     if (inp && inp.type === "file" && inp.closest && inp.closest("[data-drop]")){
-      var q = inp.closest(".q");
-      if (q) handleFiles(q.dataset.q, inp.files);
+      handleFiles(inp.files);
       inp.value = "";     // 允许再次选同一张
+    }
+    if (inp && inp.dataset && inp.dataset.shotnote !== undefined){
+      var list = shots();
+      var i = parseInt(inp.dataset.shotnote, 10);
+      if (list[i]) { list[i].n = inp.value; save(); }
     }
   });
 
@@ -595,13 +603,11 @@ def _question(qtext: str, qid: str, answer_html: str, mode: str = MODE_ASK) -> s
     「不知道/不确定」永不算错（抄 amosblomqvist/learn 的 correct|wrong|dont_know）。
     """
     if mode == MODE_TEACH:
-        answer_area = f"""<div class="drop" data-drop>
-       ✍️ <b>把你在平板上的解答贴到这里</b>（点一下选图，或直接把图拖进来 / Ctrl+V 粘）
-      <input type="file" accept="image/*" multiple>
-    </div>
-    <div class="shotlist" data-shots></div>
-    <div class="hint" style="margin-top:6px">贴了图才算"有过程"；只写答案不算。</div>
-    {answer_html}"""
+        # 数理：作答**不在这里贴**。用户原话：「我希望所有问题我可以在最后一次上传，
+        # 每个问题平板导出很烦很影响效率」——
+        # 每题一个上传框 = 每做一题就得从平板导出一次，把学习切成碎步。
+        # 所以贴图区移到页面末尾，**全部写完一次性传**（见 _upload_section）。
+        answer_area = answer_html
     else:
         # ★ 这里必须带上 answer_html。第一版只放了 textarea，
         #   结果背记课的「看答案」点开是空的 —— 答案块整个没生成（实测抓到）。
@@ -647,8 +653,12 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
 
     fig = ""
     if img_rel:
-        fig = (f'<figure><img src="{esc(img_rel)}" alt="第 {page} 页" loading="lazy">'
-               f'<figcaption>课件第 {page} 页 · 点图放大 · 答案以这一页为准</figcaption></figure>')
+        # 说明里写"PDF 第 N 页"而不是"课件第 N 页"：课件自己印的页码常与 PDF
+        # 物理页序差 1（封面无页码）。实测用户看到"课件第 19 页"而图上写着 18，
+        # 会以为程序找错了页。
+        fig = (f'<figure><img src="{esc(img_rel)}" alt="PDF 第 {page} 页" loading="lazy">'
+               f'<figcaption>原课件 PDF 第 {page} 页 · 点图放大 · 答案以这一页为准'
+               f'</figcaption></figure>')
     points = ''.join(f'<li>{esc(p)}</li>' for p in (k.get('points') or []))
 
     if mode == MODE_TEACH:
@@ -678,6 +688,37 @@ def _kc_section(i: int, k: dict, img_rel: str | None, page: int,
   <div class="kcno">第 {i} 个知识点 · {esc(k.get('type') or '')}</div>
   <h2>{label}{''.join(tags)}</h2>
   {body}
+</section>"""
+
+
+def _upload_section(n_kc: int, n_q: int) -> str:
+    """数理课的**统一作答上传区** —— 放在页面末尾，全部写完一次传。
+
+    ★ 用户原话：「我希望所有问题我可以在最后一次上传，**每个问题平板导出很烦
+    很影响效率**」。所以不做"每题一个上传框"：从平板导出一次已经够烦，
+    让他每做一题导出一次，等于把连续的学习切成碎步。
+
+    每张图可以**可选**地标一下对应哪几题（不标也能用）—— 他在纸上自己会写题号，
+    程序不强制建立对应关系（用户也明确说过"我觉得没必要对应"）。
+    """
+    return f"""<section class="askbox" id="mywork">
+  <h2>✍️ 我的解答 —— 写完了再一次性传上来</h2>
+  <div class="hint">
+    这一节共 <b>{n_kc} 个知识点、{n_q} 道题</b>。建议：<b>在平板上按顺序把解答写完整</b>
+    （写清题号、保留推导过程），全部写完后再回到这里，<b>一次性</b>把图传上来。
+    不用一题一题传。
+  </div>
+  <div class="drop" data-drop>
+    📎 <b>点这里选图</b>，或把图<b>拖进这个框</b>，也可以直接 <b>Ctrl+V</b> 粘贴<br>
+    <span style="font-size:13px">可以一次选多张；分几次传也行，都会攒在这里。</span>
+    <input type="file" accept="image/*" multiple>
+  </div>
+  <div class="hint" id="shottip" style="margin-top:8px"></div>
+  <div class="shotlist" id="shotlist"></div>
+  <div class="row">
+    <span class="hint" id="shotcount"></span>
+    <button id="expbtn2">导出我的作答</button>
+  </div>
 </section>"""
 
 
@@ -738,6 +779,8 @@ def build_lesson(course_label: str, chapter: dict, part: str,
 </header>
 
 {''.join(secs)}
+
+{_upload_section(len(kc_list), n_q) if mode == MODE_TEACH else ""}
 
 <section class="askbox">
   <h2>还是要问？</h2>

@@ -98,6 +98,8 @@ check("答案默认是隐藏的（检索练习的关键）",
       'class="answer"' in html and 'class="answer show"' not in html)
 check("页图用的是相对路径（lessons/ → ../assets/）",
       "../assets/s/p001.jpg" in html)
+check("页图说明写的是「PDF 第 N 页」（避免与课件自印页码混淆）",
+      "PDF 第 1 页" in html and "课件第" not in html)
 check("没有外链依赖（离线可用）",
       not re.search(r'(src|href)="https?://', html),
       str(re.findall(r'(?:src|href)="https?://[^"]+', html)[:3]))
@@ -167,6 +169,18 @@ check("未实现的课型名会被兜回 ask-first",
       'data-mode="ask-first"' in L.build_lesson("测试课", ch, "P", one,
                                                 lambda k: (None, 0), mode="乱写"))
 
+# ★ 回归（用户实测反馈）：「我希望所有问题我可以在最后一次上传，
+#   每个问题平板导出很烦很影响效率」—— 每题一个上传框 = 每做一题从平板导出一次，
+#   把连续的学习切成碎步。所以整节课只留**一个**上传区，放在末尾。
+_n_drop = h_tch.count('class="drop" data-drop')
+check("★ teach-first：整节课**只有一个**上传区（不是每题一个）", _n_drop == 1, f"{_n_drop} 个")
+check("★ 上传区排在所有知识点之后（末尾的「收尾」之前）",
+      h_tch.find('id="mywork"') > h_tch.rfind('id="kc'), "位置不对")
+check("★ 写明「一次性」且支持多选多张", "一次性" in h_tch and 'multiple' in h_tch)
+check("每张图有可选标注框（不强制与题号对应）",
+      "shotnote" in h_tch and "可不填" in h_tch)
+check("ask-first 课里没有这个上传区", 'id="mywork"' not in h_ask)
+
 # ---------------------------------------------------------------- 4 幂等
 
 h_a = L.build_lesson("测试课", ch, "P", one, lambda k: ("../assets/s/p001.jpg", 1))
@@ -202,6 +216,32 @@ else:
             check(f"★ {course} · {chx.get('label')}：各节加起来 == 全部知识点"
                   f"（{covered}/{total}）", covered == total,
                   f"差了 {total - covered} 个")
+
+    # ★ 回归（真实事故，静默失效）：页图扩展名在两条摄取路径上不一样 ——
+    #   PDF 出 `.png`、Office 出 `.jpg`，而生成器一度写死 `.jpg`。
+    #   结果**物理 15 节 56 张、线代 5 节 16 张全是破图**，不报错、不失败，
+    #   用户打开只看到"课件第 N 页"底下空着。
+    #   光断言"没有外链"是不够的 —— 必须断言**每个 src 都能解析到真实文件**。
+    ldir = os.path.join(croot, "lessons")
+    if os.path.isdir(ldir):
+        n_img = n_bad = 0
+        bad_sample = []
+        for fn in sorted(os.listdir(ldir)):
+            if not fn.endswith(".html"):
+                continue
+            hh = open(os.path.join(ldir, fn), encoding="utf-8").read()
+            for src in set(re.findall(r'<img\s+src="([^"]+)"', hh)):
+                if src.startswith(("http://", "https://", "data:")):
+                    continue
+                n_img += 1
+                tgt = os.path.normpath(os.path.join(ldir, src))
+                if not os.path.exists(tgt):
+                    n_bad += 1
+                    if len(bad_sample) < 3:
+                        bad_sample.append(src)
+        check(f"★ {course} 的课里每个页图都真的存在（{n_img - n_bad}/{n_img}）",
+              n_bad == 0, f"破图 {n_bad} 个，例如 {bad_sample}")
+        check(f"  {course} 的课里至少有一个页图引用（不是空跑）", n_img > 0, str(n_img))
 
 # ---------------------------------------------------------------- 6 代码里不留截断
 
