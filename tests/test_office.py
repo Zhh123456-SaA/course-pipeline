@@ -118,6 +118,47 @@ else:
         check("check 认得 .jpg 页图（不写死 .png）", "images=OK" in line, line.strip())
         check("  页图计数是 132/132", "(132/132)" in line, line.strip())
 
+# ---------------------------------------------------------------- 3 表格不许再丢
+
+# ★ 回归（真实事故，**丢的是生物课最该背的东西**）：
+#   `extract_any()` 把表格放在**独立的 `tables` 字段**里，`text` 可能是空的。
+#   而 ingest_office 原来只读 title/text/notes —— **整张表就这么没了**。
+#   实测这份 132 页课件有 5 张表（第 15/56/69/99/117 页），
+#   **139 个非空单元格全部丢失**，账本里只剩标题一行。
+check("render_table：渲染成 markdown 表格",
+      S.render_table([["膜结构", "蛋白质（%）"], ["红细胞", "49"]])
+      == "| 膜结构 | 蛋白质（%） |\n| --- | --- |\n| 红细胞 | 49 |",
+      repr(S.render_table([["膜结构", "蛋白质（%）"], ["红细胞", "49"]])))
+_rt = S.render_table([["a\nb|c"], ["d"]])
+check("render_table：单元格里的换行被清掉、竖线被转义（否则表格会坏）",
+      "\\|" in _rt and _rt.split("\n")[2] == "| d |", repr(_rt))
+_ragged = S.render_table([["a", "b", "c"], ["d"]])
+check("render_table：行长度不齐也能渲染（短行补空列）",
+      _ragged.split("\n")[2] == "| d |  |  |", repr(_ragged))
+check("render_table：空输入返回空串（不炸）",
+      S.render_table([]) == "" and S.render_table(None) == "")
+check("render_table：表头下面插分隔行", "| --- " in S.render_table([["x", "y"]]))
+
+if os.path.isdir(LIB):
+    led2 = os.path.join(LIB, ".ledger", "pages")
+    pf = os.listdir(led2) if os.path.isdir(led2) else []
+    if pf:
+        import json as _json
+        _d = _json.load(open(os.path.join(led2, pf[0]), encoding="utf-8"))
+        _pages = {p["no"]: (p.get("text") or "") for p in _d["pages"]}
+        check("★ 账本里页级记了表格数（第 15 页应有 1 张表）",
+              _d["pages"][14].get("tables") == 1,
+              str(_d["pages"][14].get("tables")))
+        check("★ 表格内容真的进了正文（第 15 页有 markdown 表格）",
+              "| 膜结构 |" in _pages.get(15, "") and "| 髓鞘膜 |" in _pages.get(15, ""),
+              _pages.get(15, "")[:80])
+        check("★ 五张表页都不是「只剩标题」（每个都 >100 字）",
+              all(len(_pages.get(n, "")) > 100 for n in (15, 56, 69, 99, 117)),
+              str({n: len(_pages.get(n, "")) for n in (15, 56, 69, 99, 117)}))
+        check("  离子浓度表的数字在里面（400 / 440）",
+              "400" in _pages.get(56, "") and "440" in _pages.get(56, ""),
+              _pages.get(56, "")[:120])
+
 # ---------------------------------------------------------------- 汇总
 for p in PASSES:
     print("PASS  " + p)

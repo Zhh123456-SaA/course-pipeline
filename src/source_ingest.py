@@ -52,6 +52,42 @@ def ingest_any(path: str, images_dir: str | None = None, scale: float = 1.6,
     )
 
 
+def _cell(s: object) -> str:
+    """表格单元格 → 单行文本（markdown 表格里不能有换行和竖线）。"""
+    t = str(s if s is not None else "")
+    t = t.replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+    return t
+
+
+def render_table(rows: list) -> str:
+    """把 extractor 给的表格（list[list[str]]）渲染成 markdown 表格。
+
+    ★ 为什么要专门做这一步（真实事故，**丢的是生物课最该背的东西**）：
+    `extract_any()` 把表格放在 **独立的 `tables` 字段**里，`text` 可能是空的。
+    而 `ingest_office` 原来只读 `title`/`text`/`notes` —— **整张表就这么没了**。
+    实测这份 132 页的生物课件有 5 张表（第 15/56/69/99/117 页），
+    **139 个非空单元格全部丢失**，账本里只剩标题一行：
+
+        第 15 页 → 只剩「一些生物膜的成份比例」（表是各类膜的蛋白/脂质/糖比例）
+        第 56 页 → 只剩「细胞和血液中的离子浓度」（表是 K⁺/Na⁺/Cl⁻/Ca²⁺ 浓度）
+        第 69 页 → 只剩「三类ATP泵」（表是 P/V/F/ABC 型的举例）
+        第 99 页 → 只剩「细胞粘附分子」（表是家族—配体—连接对照）
+        第117 页 → 只剩一句无关的话（表是 6 种连接的功能/位置/关键蛋白）
+
+    知识点是从账本文字里抽的 —— 表没进来，知识点就必然缺、题也问不到。
+    """
+    if not rows:
+        return ""
+    out: list[str] = []
+    width = max(len(r) for r in rows)
+    for i, r in enumerate(rows):
+        cells = [_cell(c) for c in r] + [""] * (width - len(r))
+        out.append("| " + " | ".join(cells) + " |")
+        if i == 0:      # 第一行当表头
+            out.append("| " + " | ".join(["---"] * width) + " |")
+    return "\n".join(out)
+
+
 def ingest_office(path: str, images_dir: str | None = None,
                   render_images: bool = True) -> dict:
     """PPTX / PPT / DOCX / DOC → 逐页结构。
@@ -66,6 +102,7 @@ def ingest_office(path: str, images_dir: str | None = None,
     slides = raw.get("slides") or []
 
     pages: list[dict] = []
+    n_table = 0
     for i, s in enumerate(slides, start=1):
         no = int(s.get("number") or i)
         title = str(s.get("title") or "").strip()
@@ -77,6 +114,15 @@ def ingest_office(path: str, images_dir: str | None = None,
             parts.append(title)
         if body:
             parts.append(body)
+        # ★ 表格是独立字段，必须显式接进来（原来漏了，见 render_table 的说明）
+        tables = s.get("tables") or []
+        for t in tables:
+            # extractor 的表格有时嵌一层 {"rows": [...]}，两种都认
+            rows = t.get("rows") if isinstance(t, dict) else t
+            md = render_table(rows or [])
+            if md:
+                parts.append(md)
+                n_table += 1
         if notes:
             parts.append(f"【讲者备注】{notes}")
         text = "\n".join(parts).strip()
@@ -88,6 +134,7 @@ def ingest_office(path: str, images_dir: str | None = None,
             "lines_removed": 0,
             "has_text_layer": bool(text),
             "is_blank": len(text) < 3,
+            "tables": len(tables),
         })
 
     page_count = len(pages)
@@ -124,5 +171,6 @@ def ingest_office(path: str, images_dir: str | None = None,
         "boilerplate": [],
         "running_head": running_head,
         "kind": "office",
+        "tables": n_table,
         "warn": warn,
     }
