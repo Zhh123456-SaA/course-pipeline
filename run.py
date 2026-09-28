@@ -37,6 +37,7 @@ import kcs as kcs_mod  # noqa: E402
 import lesson_html  # noqa: E402
 import libroot  # noqa: E402
 import pdf_source  # noqa: E402
+import serve as serve_mod  # noqa: E402
 import study  # noqa: E402
 import source_ingest  # noqa: E402
 import qa  # noqa: E402
@@ -573,7 +574,14 @@ def cmd_lesson(course: str, only: str | None = None,
         # 不分「部分」也不出题 —— 这一步的目的只是让他产生两种信号
         # （「这里重要」的划线、与「这里不懂」的提问），不是学。
         if mode == lesson_html.MODE_SURVEY:
-            plist = [{"no": n, "src": f"../assets/{slug}/{fn}"}
+            # ★ 必须把**页文本**一起嵌进去：阶梯追问要拿它当依据。
+            #   实测踩到：一开始只传 {no, src}，页文本全是空的 →
+            #   追问 prompt 里的「课件第 N 页原文」是空白，AI 只能瞎问。
+            _pd = led.load_pages(stem) or {}
+            _text_of = {int(p["no"]): (p.get("text") or "")
+                        for p in (_pd.get("pages") or [])}
+            plist = [{"no": n, "src": f"../assets/{slug}/{fn}",
+                      "text": _text_of.get(n, "")}
                      for n, fn in sorted(page_file.items())]
             if not plist:
                 report.append(f"[skip ] {stem}：没有页图，过课件页生成不了")
@@ -745,7 +753,11 @@ def cmd_clean(course: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="课程流水线：讲义 PDF → 账本 → 笔记")
-    ap.add_argument("--course", required=True, help="课程名（对应 学习库\\<课程名>）")
+    ap.add_argument("--course", default="",
+                    help="课程名（对应 <学习库>\\<课程名>）；serve 时可省略")
+    ap.add_argument("--port", type=int, default=8021, help="serve 动作：端口")
+    ap.add_argument("--open-browser", action="store_true",
+                    help="serve 动作：起来后自动打开浏览器")
     ap.add_argument("--no-images", action="store_true", help="不渲染页图")
     ap.add_argument("--scale", type=float, default=1.6, help="页图缩放（默认 1.6）")
     ap.add_argument("--force", action="store_true", help="忽略缓存，强制重算")
@@ -775,8 +787,17 @@ def main(argv: list[str] | None = None) -> int:
                          "缺省则每个部分各生成一节")
     ap.add_argument("action",
                     choices=["ingest", "render", "archive", "cards", "kcs",
-                             "lesson", "study", "all", "check", "clean"])
+                             "lesson", "study", "serve", "all", "check", "clean"])
     args = ap.parse_args(argv)
+
+    # serve 不需要指定课程；其余动作都要
+    if args.action != "serve" and not args.course:
+        ap.error("--course 是必填的（serve 除外）")
+
+    if args.action == "serve":
+        serve_mod.serve(library_root(), course=args.course, port=args.port,
+                        open_browser=args.open_browser)
+        return 0
 
     lines: list[str] = []
     if args.action == "clean":

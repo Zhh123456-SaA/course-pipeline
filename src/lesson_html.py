@@ -605,6 +605,90 @@ _JS = """
 #     框上再点 ❓     = 提问「这里我不懂」（要打字，所以会少很多）
 # 两种信号都记下来 —— 划线数量远多于提问，是更密的信号。
 
+#: 所有页面共用的一段：探测本地服务、直写账本、阶梯式追问。
+#:
+#: 用户原话：「**什么意思，我导出了之后需要做什么**，我希望这是一键式的，
+#: 同时**交互式必须要做**」。两句话是同一个根因：离线页面只能"导出再手动导入"，
+#: 而交互式追问（AI 反问 → 你答 → 它再答）**必须有人在线**。
+#: 所以：服务在 → 直写 + 真追问；服务不在 → 退回导出（离线仍可用，不强依赖）。
+_NET_JS = """
+  // ---- 本地服务：在了就一键式，不在就退回导出 ----
+  var SRV = { on: false, note: "" };
+  window.__srv = SRV;
+
+  function srvBadge(){
+    var b = document.getElementById("srvbadge");
+    if (!b) return;
+    if (SRV.on){
+      b.textContent = "✓ 已连上本地服务：标记 / 提问 / 自评直接进账本";
+      b.style.background = "#e7f5ec"; b.style.color = "#15803d";
+    } else {
+      b.textContent = "○ 没连上服务（双击打开的）：最后点「导出」再导入；"
+                    + "想要一键式与交互式追问，用 启动学习库.bat 打开";
+      b.style.background = "#fff4e5"; b.style.color = "#b45309";
+    }
+  }
+
+  function srvPing(cb){
+    var t = setTimeout(function(){ SRV.on = false; srvBadge(); cb && cb(); }, 1500);
+    try {
+      fetch("/api/ping", { cache: "no-store" }).then(function(r){ return r.json(); })
+        .then(function(j){
+          clearTimeout(t);
+          SRV.on = !!(j && j.ok);
+          SRV.engine = !!(j && j.engine);
+          srvBadge(); cb && cb();
+        }).catch(function(){ clearTimeout(t); SRV.on = false; srvBadge(); cb && cb(); });
+    } catch(e){ clearTimeout(t); SRV.on = false; srvBadge(); cb && cb(); }
+  }
+
+  function srvPost(path, obj, cb){
+    if (!SRV.on) return false;
+    try {
+      fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(obj) })
+        .then(function(r){ return r.json(); })
+        .then(function(j){ cb && cb(j); })
+        .catch(function(e){ cb && cb({ ok:false, msg:String(e) }); });
+      return true;
+    } catch(e){ return false; }
+  }
+
+  // ---- 阶梯式追问（默认不直接给答案）-----------------------------------------
+  // 抄 Flagrare/llm-tutor 的五级提示阶梯：先反问他该往哪想；连续卡壳 3 次、
+  // 或明说「别问了直接讲」，才给完整讲解，且给完必须再问一个反向验证题。
+  function ladderAsk(ctx, box, question){
+    var flow = box.querySelector(".ladder");
+    var q = (question || "").trim();
+    if (!q) return;
+    if (ctx.first === undefined) ctx.first = q;
+    flow.style.display = "block";
+    var mine = document.createElement("div");
+    mine.className = "turn me"; mine.textContent = q;
+    flow.appendChild(mine);
+    var wait = document.createElement("div");
+    wait.className = "turn ai"; wait.textContent = "…";
+    flow.appendChild(wait);
+    flow.scrollTop = flow.scrollHeight;
+    srvPost("/api/ask", {
+      course: window.__COURSE__ || "", session: ctx.session,
+      page: ctx.page, selection: ctx.selection || "",
+      question: q, page_text: ctx.pageText || ""
+    }, function(j){
+      wait.textContent = j && j.ok ? j.text : ("（没能问到："
+        + ((j && j.msg) || "未知错误") + "）");
+      if (j && j.gave_answer){
+        var d = document.createElement("div");
+        d.className = "turn note";
+        d.textContent = "（这一轮给了完整讲解 —— 记得自己再复述一遍才算真会）";
+        flow.appendChild(d);
+      }
+      flow.scrollTop = flow.scrollHeight;
+    });
+  }
+"""
+
+
 _SURVEY_CSS = """
 *{box-sizing:border-box}
 body{margin:0;background:#16181c;color:#e8e6e3;
@@ -649,6 +733,17 @@ button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 .mkitem .p{color:#9aa0a6;white-space:nowrap;font-variant-numeric:tabular-nums}
 .mkitem .q{color:#7fc9a0}
 .mkitem a{color:#f5c451;cursor:pointer;text-decoration:none}
+#srvbadge{font-size:12px;padding:3px 10px;border-radius:99px;background:#262a30;
+  color:#9aa0a6;margin-left:auto}
+.ladder{display:none;max-height:260px;overflow:auto;margin-top:8px;padding:8px;
+  background:#16181c;border:1px solid #2c3036;border-radius:8px;font-size:13px}
+.turn{margin:5px 0;padding:6px 10px;border-radius:8px;line-height:1.6;white-space:pre-wrap}
+.turn.me{background:#243026;color:#b8e0c8}
+.turn.ai{background:#232830;color:#dfe4ea}
+.turn.note{background:#33290f;color:#e0c675;font-size:12px}
+.lrow{display:flex;gap:8px;margin-top:8px}
+.lrow input{flex:1;padding:8px 10px;border-radius:8px;border:1px solid #2c3036;
+  background:#16181c;color:#e8e6e3;font:inherit;font-size:14px}
 """
 
 _SURVEY_JS = """
@@ -808,6 +903,33 @@ _SURVEY_JS = """
     if (t.id === "prev"){ go(cur - 1); return; }
     if (t.id === "next"){ go(cur + 1); return; }
     if (t.id === "expbtn"){ exportLog(); return; }
+    // 追问 AI（阶梯）：先反问他，不直接给答案
+    if (t.id === "askai"){
+      var v = document.getElementById("editor").querySelector("textarea").value.trim();
+      if (!v){ document.getElementById("editor").querySelector("textarea").focus(); return; }
+      commitEditor();
+      var ed = document.getElementById("editor");
+      document.getElementById("lrow").style.display = "flex";
+      ladderAsk({
+        session: (document.body.dataset.lesson || "") + ":p" + (cur + 1),
+        page: cur + 1,
+        selection: "",
+        pageText: (PAGES[cur] || {}).t || ""
+      }, ed, v);
+      return;
+    }
+    if (t.id === "lsend"){
+      var inp = document.querySelector("#lrow input");
+      var q = (inp.value || "").trim();
+      if (!q) return;
+      inp.value = "";
+      ladderAsk({
+        session: (document.body.dataset.lesson || "") + ":p" + (cur + 1),
+        page: cur + 1, selection: "",
+        pageText: (PAGES[cur] || {}).t || ""
+      }, document.getElementById("editor"), q);
+      return;
+    }
     if (t.id === "clrpage"){
       var p = cur + 1;
       st.__marks = marks().filter(function(m){ return m.p !== p; });
@@ -819,7 +941,24 @@ _SURVEY_JS = """
     if (editorFor < 0) return;
     var v = document.getElementById("editor").querySelector("textarea").value.trim();
     marks()[editorFor].q = v;
-    save(); hideEditor(); render();
+    save();
+    // 服务在的话**直接进账本** —— 用户原话：「我导出了之后需要做什么，我希望这是一键式的」
+    var m = marks()[editorFor];
+    srvPost("/api/mark", {
+      course: window.__COURSE__ || "", at: m.t, lesson: document.body.dataset.lesson,
+      mark: { p: m.p, r: m.r, q: m.q, t: m.t }
+    }, function(j){
+      if (j && j.ok){ flash("已进账本"); }
+    });
+    hideEditor(); render();
+  }
+
+  function flash(msg){
+    var b = document.getElementById("srvbadge");
+    if (!b) return;
+    var old = b.textContent;
+    b.textContent = "✓ " + msg;
+    setTimeout(function(){ b.textContent = old; }, 1500);
   }
 
   document.addEventListener("keydown", function(e){
@@ -847,10 +986,12 @@ _SURVEY_JS = """
   }
 
   window.addEventListener("load", function(){
+    srvPing();
     var m = /^#p(\\d+)$/.exec(location.hash || "");
     go(m ? parseInt(m[1], 10) - 1 : 0);
   });
   if (document.readyState === "complete") {
+    srvPing();
     var m0 = /^#p(\\d+)$/.exec(location.hash || "");
     go(m0 ? parseInt(m0[1], 10) - 1 : 0);
   }
@@ -868,9 +1009,10 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
     知识点会标注"你在这一页标记过 N 处"，问题清单位居库的主入口。
     """
     import json as _json
-    plist = [{"n": p["no"], "src": p["src"]} for p in pages if p.get("src")]
+    plist = [{"n": p["no"], "src": p["src"], "t": (p.get("text") or "")[:1200]}
+             for p in pages if p.get("src")]
     if not plist:
-        plist = [{"n": 0, "src": ""}]
+        plist = [{"n": 0, "src": "", "t": ""}]
     lesson_id = f"{course_label}:{chapter.get('id')}:{html_name or 'survey'}:survey"
     outline = chapter.get("outline") or {}
     return f"""<!DOCTYPE html>
@@ -891,6 +1033,7 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
   <span class="hint" id="mkcount"></span>
   <button id="clrpage">清空本页标记</button>
   <button id="expbtn" class="primary">导出我的标记与提问</button>
+  <span id="srvbadge"></span>
 </div>
 
 <div class="stage">
@@ -899,8 +1042,9 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
     <div class="layer" id="layer"></div>
   </div>
   <div class="hint" style="margin-top:10px">
-    这一页**不问你、不给答案** —— 就是把课件过一遍，看到重要的拖个框，不懂的点 ❓。
-    全过完之后，导出去，程序会把你的标记和问题带进后面的知识点与课里。
+    这一页<b>不问你、不给答案</b> —— 就是把课件过一遍，看到重要的拖个框，不懂的点 ❓。
+    框上点 ❓ 写问题时，如果本地服务开着，可以直接<b>追问 AI</b>
+    （它会先反问你，不直接给答案）。
   </div>
 </div>
 
@@ -913,11 +1057,19 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
   <textarea placeholder="这里你想问什么？（Ctrl+Enter 保存，Esc 取消）"></textarea>
   <div class="row">
     <button id="cancelmk">取消</button>
+    <button id="askai">问 AI（先反问你）</button>
     <button id="savemk" class="primary">保存问题</button>
+  </div>
+  <div class="ladder"></div>
+  <div class="lrow" id="lrow" style="display:none">
+    <input placeholder="说说你的想法 / 或者输入“别问了直接讲”">
+    <button id="lsend">回复</button>
   </div>
 </div>
 
-<script>window.__PAGES__ = {_json.dumps(plist, ensure_ascii=False)};</script>
+<script>window.__PAGES__ = {_json.dumps(plist, ensure_ascii=False)};
+window.__COURSE__ = {_json.dumps(course_label, ensure_ascii=False)};</script>
+<script>{_NET_JS}</script>
 <script>{_SURVEY_JS}</script>
 </body>
 </html>
