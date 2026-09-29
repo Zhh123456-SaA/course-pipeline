@@ -218,8 +218,8 @@ check("★ survey：拖框即写账本（不等导出）", '"/api/mark"' in h_sv
 check("★ survey：左右两栏（左课件 / 右侧栏）",
       '<main id="main">' in h_sv and '<aside id="side">' in h_sv
       and 'id="scroller"' in h_sv)
-check("★ survey：侧栏有四个页签（问 AI / 标记 / 问过的 / 知识点）",
-      all(f'data-tab="{t}"' in h_sv for t in ("ai", "marks", "hist", "kcs")))
+check("★ survey：侧栏有三个页签（问 AI / 标记与提问 / 知识点）",
+      all(f'data-tab="{t}"' in h_sv for t in ("ai", "marks", "kcs")))
 check("★ survey：AI 常驻输入框在侧栏里（不用先画框才能问）",
       'id="qbox"' in h_sv and 'id="qsend"' in h_sv)
 check("★ survey：对话流固定在侧栏", 'id="ladderflow"' in h_sv)
@@ -250,6 +250,27 @@ check("★ ③ 顶栏有页码输入框（132 页靠滚太慢）",
       'id="pinput"' in h_sv and 'parseInt(_pi.value, 10)' in h_sv)
 check("★ ③ 滚动时页码框跟着变（但正在打字时不抢）",
       'document.activeElement !== pi' in h_sv)
+
+# ---- 用户报的三件（AI 回复消失 / 两个页签重复 / 「我问」要能定位）----
+# ★ 「回复消失」的真根因：`ladderAsk` 里用了 `esc(...)`，而 `esc` 定义在
+#   **另一个 <script> 块**里 —— 两个块是各自独立的 IIFE，互相看不见。
+#   调用处抛 ReferenceError，回复渲染到一半就断，看起来就是"没有回复"。
+_blocks = re.findall(r"(?s)<script>(.*?)</script>", h_sv)
+_blocks = [b for b in _blocks if "function" in b]
+check("★ 每个 script 块都自带 esc（不许跨块调用）",
+      len(_blocks) >= 2 and all("function esc(" in b for b in _blocks),
+      f"{len(_blocks)} 个块")
+check("★ 页签合并成「标记与提问」（不再有重复的「问过的」）",
+      "标记与提问" in h_sv and 'data-tab="hist"' not in h_sv)
+check("★ 一条标记只出现一次（合并后不重复列两遍）",
+      h_sv.count("all.forEach(function(m, i){") == 1)
+check("★ 「我问：」是超链接，点了跳回那个框（用户明确要的）",
+      'className = "myq"' in h_sv and 'q.dataset.gopage' in h_sv)
+check("★ 整条标记也能点着跳回", "row.dataset.gopage" in h_sv)
+check("★ 标记条里直接带 AI 的回话（不用另开一个页签找）",
+      'className = "aia"' in h_sv)
+check("★ 从账本补 AI 回话时**不覆盖**已有的（免得把你刚看到的刷掉）",
+      "!all[i].a && x.a" in h_sv)
 
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))

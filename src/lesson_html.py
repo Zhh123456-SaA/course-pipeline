@@ -612,6 +612,15 @@ _JS = """
 #: 而交互式追问（AI 反问 → 你答 → 它再答）**必须有人在线**。
 #: 所以：服务在 → 直写 + 真追问；服务不在 → 退回导出（离线仍可用，不强依赖）。
 _NET_JS = """
+  // ★ 自己带一个转义函数：两个 <script> 块是**各自独立的 IIFE**，互相看不见。
+  //   实测事故：这里用了另一个块里的 `esc(...)` → ReferenceError →
+  //   AI 的回复渲染到一半就抛错，看起来就是"回复消失了"。
+  function esc(s){
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function(c){
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+    });
+  }
+
   // ---- 本地服务：在了就一键式，不在就退回导出 ----
   var SRV = { on: false, note: "" };
   window.__srv = SRV;
@@ -794,8 +803,15 @@ figure.pg.tome figcaption{background:#2f6f4e}
 .lrow input{flex:1;padding:9px 11px;border-radius:8px;border:1px solid #2c3036;
   background:#16181c;color:#e8e6e3;font:inherit;font-size:14px}
 .lrow input:focus{outline:2px solid #7fc9a0;border-color:transparent}
-.mkitem{display:flex;gap:9px;align-items:flex-start;font-size:13px;padding:7px 6px;
+.mkitem{display:block;font-size:13px;padding:8px 6px;
   border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
+.mkh{display:flex;gap:8px;align-items:center;font-size:12px;color:#9aa0a6}
+.mkh .badge{background:#2f6f4e;color:#fff;border-radius:99px;padding:1px 8px;font-size:11px}
+.myq{display:block;color:#7fc9a0;text-decoration:underline;margin-top:4px;
+  text-decoration-style:dotted;cursor:pointer}
+.myq:hover{color:#b8e0c8}
+.aia{margin-top:5px;padding:6px 9px;background:#232830;border-radius:8px;color:#c7cdd4;
+  font-size:12px;line-height:1.6;white-space:pre-wrap;max-height:150px;overflow:auto}
 .mkitem:hover{background:#232830}
 .mkitem .p{color:#9aa0a6;white-space:nowrap;font-variant-numeric:tabular-nums}
 .mkitem .q{color:#7fc9a0}
@@ -918,25 +934,51 @@ _SURVEY_JS = """
     if (fig) fig.classList.toggle("tome", list.length > 0);
   }
 
+  // ★ ② 「标记」和「问过的」本来是两份、内容重复 —— 合成一条。
+  //   一条 = 一个框，带「我问」超链接（③ 点了跳回那个框）+ AI 的回话。
   function renderList(){
     var box = document.getElementById("mklist");
     var all = marks();
+    var asked = all.filter(function(m){ return m.q; }).length;
     document.getElementById("mkcount").textContent =
-      all.length ? ("已标记 " + all.length + " 处（其中提问 " +
-                    all.filter(function(m){ return m.q; }).length + " 条）") : "";
-    if (!all.length){ box.innerHTML = '<div class="hint">还没有标记。在课件上拖一个框试试。</div>'; return; }
+      all.length ? ("已标记 " + all.length + " 处（其中提问 " + asked + " 条）") : "";
+    if (!all.length){
+      box.innerHTML = '<div class="hint">还没有标记。在课件上拖一个框试试。</div>';
+      return;
+    }
     box.innerHTML = "";
-    all.slice().sort(function(a,b){ return a.p - b.p; }).forEach(function(m){
+    var n = 0;
+    all.forEach(function(m, i){
+      var isQ = !!m.q;
+      if (isQ) n++;
       var row = document.createElement("div");
       row.className = "mkitem";
-      var p = document.createElement("span"); p.className = "p";
-      var a = document.createElement("a");
-      a.textContent = "第 " + m.p + " 页"; a.dataset.gopage = String(m.p);
-      p.appendChild(a);
-      var s = document.createElement("span");
-      s.innerHTML = m.q ? ('<span class="q">❓ ' + esc(m.q) + "</span>")
-                        : "⭐ 标记（未提问）";
-      row.appendChild(p); row.appendChild(s);
+      row.dataset.gopage = String(m.p);            // 点整条都能跳回那一页
+      var head = document.createElement("div");
+      head.className = "mkh";
+      head.innerHTML = (isQ ? '<span class="badge">框' + n + "</span>"
+                            : '<span class="star">⭐</span>')
+        + '<span class="p">第 ' + m.p + " 页</span>"
+        + '<span class="hint">' + (m.at || "") + "</span>";
+      row.appendChild(head);
+      if (isQ){
+        // ③ 「我问：xxx」本身就是超链接 —— 点它定位到那个框
+        var q = document.createElement("a");
+        q.className = "myq";
+        q.dataset.gopage = String(m.p);
+        q.textContent = "我问：" + m.q;
+        row.appendChild(q);
+      } else {
+        var t = document.createElement("div");
+        t.className = "hint"; t.textContent = "（只是标记，还没提问）";
+        row.appendChild(t);
+      }
+      if (m.a){
+        var a = document.createElement("div");
+        a.className = "aia";
+        a.textContent = "AI：" + m.a;
+        row.appendChild(a);
+      }
       box.appendChild(row);
     });
   }
@@ -1093,43 +1135,30 @@ _SURVEY_JS = """
     toast("已导出到下载目录");
   }
 
-  // ---- 把"我问过 AI 的"读回来显示 ------------------------------------------
-  // 用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」。
-  // 这些来回现在存在账本里（`lesson.ladder`），所以关掉页面、重启服务都还在。
+  // ---- 从账本把追问历史读回来 ------------------------------------------
+  // 用户原话：「那我在哪里查看我和 ai 的交互和反问呢」。
+  // 现在合并进「标记与提问」那一条上（不再单开一个重复的页签）。
+  // 只在本地没有 AI 回话时补上（本地有就不覆盖，免得把你刚看到的刷掉）。
   function loadLadder(){
     var L = document.body.dataset.lesson || "";
     if (!SRV.on || !L) return;
     fetch("/api/ladder?lesson=" + encodeURIComponent(L), { cache: "no-store" })
       .then(function(r){ return r.json(); })
-      .then(function(j){ renderLadder((j && j.ladder) || []); })
+      .then(function(j){
+        var rows = (j && j.ladder) || [];
+        if (!rows.length) return;
+        var all = marks(), dirty = false;
+        rows.forEach(function(x){
+          for (var i = 0; i < all.length; i++){
+            if (all[i].p === x.p && all[i].q === x.q && !all[i].a && x.a){
+              all[i].a = x.a; dirty = true; break;
+            }
+          }
+        });
+        if (dirty){ save(); renderList(); if (window.__redraw) window.__redraw(); }
+      })
       .catch(function(){});
   }
-  function renderLadder(rows){
-    var box = document.getElementById("ladderlist");
-    if (!box) return;
-    if (!rows.length){
-      box.innerHTML = '<div class="hint">还没有追问记录。在框上点 ❓ 写个问题，'
-                    + '再点「问 AI」试试。</div>';
-      return;
-    }
-    box.innerHTML = "";
-    rows.slice().reverse().forEach(function(x){
-      var d = document.createElement("div");
-      d.className = "lad";
-      var h = document.createElement("div");
-      h.className = "ladh";
-      h.innerHTML = '<a data-gopage="' + (x.p || 1) + '">第 ' + (x.p || "?") + ' 页</a>'
-                  + ' <span class="p">' + esc(x.at || "") + "</span>"
-                  + (x.gave_answer ? ' <span class="gave">给了完整讲解</span>' : "");
-      var q = document.createElement("div");
-      q.className = "turn me"; q.textContent = "我问：" + (x.q || "");
-      var a = document.createElement("div");
-      a.className = "turn ai"; a.textContent = "AI：" + (x.a || "");
-      d.appendChild(h); d.appendChild(q); d.appendChild(a);
-      box.appendChild(d);
-    });
-  }
-
   window.__reloadLadder = loadLadder;
   window.__redraw = function(){ try { render(); } catch(e){} };
 
@@ -1142,7 +1171,6 @@ _SURVEY_JS = """
       p.classList.toggle("on", p.id === "p-" + name);
     });
     if (name === "kcs") loadKcs();
-    if (name === "hist") loadLadder();
   }
   document.querySelectorAll(".tabs button").forEach(function(b){
     b.addEventListener("click", function(){ showTab(b.dataset.tab); });
@@ -1299,8 +1327,7 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <aside id="side">
   <div class="tabs">
     <button data-tab="ai" class="on">💬 问 AI</button>
-    <button data-tab="marks">✍️ 标记</button>
-    <button data-tab="hist">🕘 问过的</button>
+    <button data-tab="marks">✍️ 标记与提问</button>
     <button data-tab="kcs">📚 知识点</button>
   </div>
 
@@ -1317,7 +1344,6 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
   </div>
 
   <div class="panel" id="p-marks"><div id="mklist"></div></div>
-  <div class="panel" id="p-hist"><div id="ladderlist"></div></div>
   <div class="panel" id="p-kcs"><div id="kclist"><div class="hint">加载中…</div></div></div>
 </aside>
 </div>
