@@ -684,6 +684,8 @@ _NET_JS = """
         flow.appendChild(d);
       }
       flow.scrollTop = flow.scrollHeight;
+      // 追问完刷新下面「我问过 AI 的」那一块（它从账本读的）
+      if (window.__reloadLadder) window.__reloadLadder();
     });
   }
 """
@@ -745,6 +747,10 @@ figure.pg.tome figcaption{background:#2f6f4e}
   background:#2f6f4e;color:#fff;font-size:14px;padding:9px 20px;border-radius:99px;
   opacity:0;transition:opacity .18s,transform .18s;pointer-events:none;z-index:70}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.lad{border-bottom:1px solid #2c3036;padding:10px 0}
+.ladh{font-size:12px;color:#9aa0a6;margin-bottom:5px}
+.ladh a{color:#f5c451;cursor:pointer}
+.ladh .gave{background:#33290f;color:#e0c675;border-radius:99px;padding:1px 8px}
 .ladder{display:none;max-height:260px;overflow:auto;margin-top:8px;padding:8px;
   background:#16181c;border:1px solid #2c3036;border-radius:8px;font-size:13px}
 .turn{margin:5px 0;padding:6px 10px;border-radius:8px;line-height:1.6;white-space:pre-wrap}
@@ -1008,9 +1014,48 @@ _SURVEY_JS = """
     toast("已导出到下载目录");
   }
 
+  // ---- 把"我问过 AI 的"读回来显示 ------------------------------------------
+  // 用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」。
+  // 这些来回现在存在账本里（`lesson.ladder`），所以关掉页面、重启服务都还在。
+  function loadLadder(){
+    var L = document.body.dataset.lesson || "";
+    if (!SRV.on || !L) return;
+    fetch("/api/ladder?lesson=" + encodeURIComponent(L), { cache: "no-store" })
+      .then(function(r){ return r.json(); })
+      .then(function(j){ renderLadder((j && j.ladder) || []); })
+      .catch(function(){});
+  }
+  function renderLadder(rows){
+    var box = document.getElementById("ladderlist");
+    if (!box) return;
+    if (!rows.length){
+      box.innerHTML = '<div class="hint">还没有追问记录。在框上点 ❓ 写个问题，'
+                    + '再点「问 AI」试试。</div>';
+      return;
+    }
+    box.innerHTML = "";
+    rows.slice().reverse().forEach(function(x){
+      var d = document.createElement("div");
+      d.className = "lad";
+      var h = document.createElement("div");
+      h.className = "ladh";
+      h.innerHTML = '<a data-gopage="' + (x.p || 1) + '">第 ' + (x.p || "?") + ' 页</a>'
+                  + ' <span class="p">' + esc(x.at || "") + "</span>"
+                  + (x.gave_answer ? ' <span class="gave">给了完整讲解</span>' : "");
+      var q = document.createElement("div");
+      q.className = "turn me"; q.textContent = "我问：" + (x.q || "");
+      var a = document.createElement("div");
+      a.className = "turn ai"; a.textContent = "AI：" + (x.a || "");
+      d.appendChild(h); d.appendChild(q); d.appendChild(a);
+      box.appendChild(d);
+    });
+  }
+
+  window.__reloadLadder = loadLadder;
+
   function start(){
     buildAll(); render(); watchScroll();
-    srvPing(function(){ if (SRV.on) toast("已连上服务：标记会直接进账本"); });
+    srvPing(function(){ if (SRV.on){ toast("已连上服务：标记会直接进账本"); loadLadder(); } });
     var m = /^#p(\\d+)$/.exec(location.hash || "");
     if (m){
       var f = figOf(parseInt(m[1], 10));
@@ -1064,6 +1109,11 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <div class="mkbox">
   <h2>我标记过的（点页码跳过去）</h2>
   <div id="mklist"></div>
+</div>
+
+<div class="mkbox">
+  <h2>我问过 AI 的（含它的反问）—— 从账本里读的，关掉页面也还在</h2>
+  <div id="ladderlist"><div class="hint">还没有追问记录。</div></div>
 </div>
 
 <div id="toast"></div>

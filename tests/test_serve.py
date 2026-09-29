@@ -142,6 +142,42 @@ rep = S.import_export(LIB, d2, one)
 check("★ 直写过的标记再用导出导入一次 → 认得出是重复（两条路同一份账本）",
       any("重复跳过 1 处" in x for x in rep), str(rep))
 
+# ---------------------------------------------------------------- 4b 追问来回要能查看
+
+# 用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」——
+# 在这之前，阶梯的来回只活在浏览器一个小面板里、服务端只在内存里，
+# **一个字都没进账本**，关掉就没了（又变回"读完就忘"）。
+V.study.append_ladder(LIB, LES, 27, "脂筏为什么能当信号转导平台？",
+                      "你框那段里，脂筏富含的是哪两类成分？", stalls=0)
+V.study.append_ladder(LIB, LES, 27, "不知道",
+                      "那我们缩小一点，先说说细胞膜的主要成分是什么？", stalls=1)
+V.study.append_ladder(LIB, LES, 27, "脂筏为什么能当信号转导平台？",
+                      "你框那段里，脂筏富含的是哪两类成分？", stalls=0)   # 同一轮重复
+got = S.ladder_of(LIB)
+check("★ 追问来回能存进账本、也能读回来", len(got) == 2, str(len(got)))
+check("★ 记下了「我问的」与「AI 回的」原文",
+      any(x["q"] == "不知道" and "缩小一点" in x["a"] for x in got),
+      json.dumps(got, ensure_ascii=False)[:180])
+check("  带上了卡壳次数（阶梯靠它决定给不给答案）",
+      any(x["stalls"] == 1 for x in got))
+check("  同一轮重复调用不重复记", len([x for x in got if x["q"] == "不知道"]) == 1)
+check("  按 lesson 过滤", len(S.ladder_of(LIB, LES)) == 2
+      and S.ladder_of(LIB, "别的课") == [])
+V.study.append_ladder(LIB, LES, 1, "  ", "x")
+check("空问题不记（不产生垃圾条目）", len(S.ladder_of(LIB)) == 2)
+
+# ★ 实测踩到"读回来是空的"：服务端没传 course 时把**库根**当成课程目录，
+#   去找 <库根>/.ledger/study.json（不存在）。库根与课程目录两种都要能吃。
+ROOT2 = os.path.join(ROOT, "库根")
+shutil.rmtree(ROOT2, ignore_errors=True)
+os.makedirs(os.path.join(ROOT2, "课A"), exist_ok=True)
+V.study.append_ladder(os.path.join(ROOT2, "课A"), "课A:讲:节:x", 3, "问题甲", "回答甲")
+check("★ 传库根也能读到（自动扫每门课）", len(S.ladder_of(ROOT2)) == 1,
+      str(S.ladder_of(ROOT2)))
+check("  传课程目录也能读到", len(S.ladder_of(os.path.join(ROOT2, "课A"))) == 1)
+check("  课程里有 ladder 字段（不是只存在内存）",
+      bool(S.load_study(os.path.join(ROOT2, "课A"))["lessons"]["课A:讲:节:x"].get("ladder")))
+
 # ---------------------------------------------------------------- 5 目录穿越
 
 check("★ 静态路由拒绝目录穿越（.. 不许逃出库）",

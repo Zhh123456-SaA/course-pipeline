@@ -261,6 +261,69 @@ def import_export(library_root: str, data: dict, payload: dict) -> list[str]:
     return report
 
 
+def _now() -> str:
+    import datetime
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def append_ladder(library_root: str, lesson: str, page: int, question: str,
+                  answer: str, stalls: int = 0, gave_answer: bool = False) -> None:
+    """把**一轮追问的来回**记进账本。
+
+    用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」——
+    在这之前，阶梯的来回只活在浏览器的一个小面板里（关掉就没了），
+    服务端也只存在内存里（重启就没），**一个字都没进账本**。
+    那就又变回"读完就忘"了 —— 正是加阶梯要治的病。
+
+    记「他问了什么 + AI 回了什么」，按时间追加；同样的 (页, 问题, 回答) 不重复记。
+    """
+    lesson = (lesson or "").strip()
+    if not lesson or not (question or "").strip():
+        return
+    data = load_study(library_root)
+    rec = data.setdefault("lessons", {}).setdefault(lesson, {})
+    lst = rec.setdefault("ladder", [])
+    key = (int(page or 0), question.strip(), (answer or "").strip())
+    for x in lst:
+        if (x.get("p"), x.get("q"), x.get("a")) == key:
+            return
+    lst.append({"p": int(page or 0), "q": question.strip(),
+                "a": (answer or "").strip(),
+                "stalls": int(stalls or 0), "gave_answer": bool(gave_answer),
+                "at": _now()})
+    save_study(library_root, data)
+
+
+def ladder_of(root: str, lesson: str = "") -> list[dict]:
+    """取出追问来回（给了 lesson 就只取那一节）。
+
+    `root` 既可以是**课程目录**（含 `.ledger/`），也可以是**库根目录** ——
+    后者会把每门课都扫一遍。为什么要兼容：实测踩到一次"读回来是空的"——
+    服务端在没传 course 时把库根当成了课程目录，于是去找
+    `D:\\学习库\\.ledger\\study.json`（不存在），而账本其实在
+    `D:\\学习库\\<课>\\.ledger\\study.json`。
+    """
+    roots: list[str] = []
+    if os.path.isfile(study_ledger_path(root)):
+        roots.append(root)
+    elif os.path.isdir(root):
+        for c in sorted(os.listdir(root)):
+            d = os.path.join(root, c)
+            if os.path.isdir(d) and os.path.isfile(study_ledger_path(d)):
+                roots.append(d)
+
+    out: list[dict] = []
+    for r in roots:
+        data = load_study(r)
+        for k, v in (data.get("lessons") or {}).items():
+            if lesson and k != lesson:
+                continue
+            for x in v.get("ladder") or []:
+                out.append(dict(x, lesson=k))
+    out.sort(key=lambda x: (x.get("at") or "", x.get("p") or 0))
+    return out
+
+
 def marks_by_page(library_root: str) -> dict[int, dict]:
     """跨全部小节汇总「每页被标记了几处、其中几条是提问」。
 

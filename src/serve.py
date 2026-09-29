@@ -146,6 +146,13 @@ def ask_once(library_root: str, payload: dict) -> dict:
         hist.append({"role": "assistant", "text": text})
         if len(hist) > 24:
             del hist[:-24]
+    # ★ 记进账本 —— 否则这些反问和你的回答**关掉页面就没了**。
+    #   用户原话：「那我在哪里查看我和 ai 的交互和反问呢」
+    try:
+        study.append_ladder(library_root, str(payload.get("lesson") or ""),
+                            page, question, text, stalls=stalls, gave_answer=gave)
+    except Exception:  # noqa: BLE001 - 记账失败不该让追问本身失败
+        traceback.print_exc()
     return {"ok": True, "text": text, "stalls": stalls,
             "gave_answer": bool(gave), "turn": len(hist)}
 
@@ -290,6 +297,15 @@ class Handler(BaseHTTPRequestHandler):
                 ok, why = engine.available()
                 return self._json({"ok": True, "engine": ok, "why": why,
                                    "library": self.library_root})
+            # 「我问过 AI 的」—— 用户问「我在哪里查看我和 ai 的交互和反问呢」
+            if path == "/api/ladder":
+                q = urllib.parse.parse_qs(parsed.query)
+                course2 = (q.get("course") or [self.course or ""])[0]
+                lesson2 = (q.get("lesson") or [""])[0]
+                root2 = os.path.join(self.library_root, course2) if course2 \
+                    else self.library_root
+                return self._json({"ok": True,
+                                   "ladder": study.ladder_of(root2, lesson2)})
             # ★ 用 `/c/<课>/…` **镜像课程目录结构**，页面里的相对路径才成立。
             #   实测事故：原来页面在 `/lessons/<课>/x.html`、图是 `../assets/…`，
             #   浏览器解析成 `/lessons/assets/…`，而路由是 `/assets/<课>/…` ——
