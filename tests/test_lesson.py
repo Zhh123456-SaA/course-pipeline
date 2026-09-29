@@ -228,6 +228,29 @@ check("★ survey：滚的是容器不是整页（侧栏不跟着滚）",
       'id="scroller"' in h_sv and ".scroller{flex:1;overflow:auto" in h_sv)
 check("  点页码/知识点能跳页", "function jumpTo" in h_sv)
 
+# ---- 手感①②③（用户点的单：拖完直接问 / 框与对话对上 / 敲页码跳页）----
+check("★ ① 删掉了「❓ 提问」按钮（拖完框直接打字问，少两步）",
+      'className = "qbtn"' not in h_sv)
+check("★ ① 拖完框光标自动进侧栏输入框", "activeMark = marks().length - 1" in h_sv
+      and 'document.getElementById("qbox")' in h_sv)
+check("★ ① 侧栏输入框回车即发（不用再点按钮）",
+      'if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendQ(); }' in h_sv)
+check("★ ① `/` 聚焦输入框（少一次鼠标）", "e.key === \"/\"" in h_sv)
+check("★ ① 侧栏显示「正在问哪个框」",
+      'id="qctx"' in h_sv and "function updateCtx" in h_sv)
+
+check("★ ② 问过的框有编号（和侧栏对话对得上）",
+      'className = "num"' in h_sv and "function askedIndex" in h_sv)
+check("★ ② 悬停框能看 AI 说了什么",
+      'className = "tip"' in h_sv and "mk.a = j.text" in h_sv)
+check("★ ② 对话条带「框N · 第 N 页」且可点回去",
+      "框" in h_sv and 'data-gopage' in h_sv and 'tag = "框"' in h_sv)
+
+check("★ ③ 顶栏有页码输入框（132 页靠滚太慢）",
+      'id="pinput"' in h_sv and 'parseInt(_pi.value, 10)' in h_sv)
+check("★ ③ 滚动时页码框跟着变（但正在打字时不抢）",
+      'document.activeElement !== pi' in h_sv)
+
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))
 

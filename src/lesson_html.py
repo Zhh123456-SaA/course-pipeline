@@ -657,14 +657,25 @@ _NET_JS = """
   // ---- 阶梯式追问（默认不直接给答案）-----------------------------------------
   // 抄 Flagrare/llm-tutor 的五级提示阶梯：先反问他该往哪想；连续卡壳 3 次、
   // 或明说「别问了直接讲」，才给完整讲解，且给完必须再问一个反向验证题。
-  function ladderAsk(ctx, box, question){
+  function ladderAsk(ctx, box, question, mk){
     // box 参数保留但不再用：对话流固定在侧栏 #ladderflow 里
+    // mk = 这次问的是哪个框（拖完自动指向它）。AI 的回话会写回它，悬停就能看。
     var flow = document.getElementById("ladderflow");
     var q = (question || "").trim();
     if (!q) return;
     if (ctx.first === undefined) ctx.first = q;
+    var tag = "";
+    if (mk){
+      var all = (typeof marks === "function") ? marks() : [];
+      var idx = all.indexOf(mk);
+      var no = 0;
+      for (var k = 0; k <= idx && idx >= 0; k++){ if (all[k] && all[k].q) no++; }
+      tag = "框" + Math.max(1, no) + " · 第 " + (mk.p || "?") + " 页";
+    }
     var mine = document.createElement("div");
-    mine.className = "turn me"; mine.textContent = q;
+    mine.className = "turn me";
+    mine.innerHTML = (tag ? '<span class="jump" data-gopage="' + (mk.p || 1) + '">'
+                            + tag + "</span><br>" : "") + esc(q);
     flow.appendChild(mine);
     var wait = document.createElement("div");
     wait.className = "turn ai"; wait.textContent = "…";
@@ -679,6 +690,12 @@ _NET_JS = """
     }, function(j){
       wait.textContent = j && j.ok ? j.text : ("（没能问到："
         + ((j && j.msg) || "未知错误") + "）");
+      // ★ ② 写回那个框：鼠标悬停在框上就能看到 AI 说了什么
+      if (mk && j && j.ok){
+        mk.a = j.text;
+        try { localStorage.setItem(KEY, JSON.stringify(st)); } catch(e){}
+        if (window.__redraw) window.__redraw();
+      }
       if (j && j.gave_answer){
         var d = document.createElement("div");
         d.className = "turn note";
@@ -715,6 +732,22 @@ button{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:poi
 button:hover{border-color:#7fc9a0;color:#7fc9a0}
 button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 .hint{font-size:12px;color:#9aa0a6}
+#pinput{width:52px;padding:3px 6px;border-radius:6px;border:1px solid #2c3036;
+  background:#16181c;color:#e8e6e3;font:inherit;font-size:13px;text-align:center;
+  font-variant-numeric:tabular-nums}
+#pinput:focus{outline:2px solid #7fc9a0;border-color:transparent}
+.qctx{flex:0 0 auto;padding:7px 14px;font-size:12px;color:#9aa0a6;
+  border-bottom:1px solid #2c3036;background:#1e2126}
+.qctx.on{color:#7fc9a0}
+.mk .num{position:absolute;left:-9px;top:-9px;width:18px;height:18px;border-radius:50%;
+  background:#2f6f4e;color:#fff;font-size:11px;line-height:18px;text-align:center;
+  pointer-events:none}
+.mk .tip{position:absolute;left:0;bottom:100%;margin-bottom:6px;max-width:320px;
+  background:#1e2126;border:1px solid #2c3036;border-radius:8px;padding:6px 10px;
+  font-size:12px;color:#dfe4ea;line-height:1.6;display:none;white-space:normal;
+  z-index:5;box-shadow:0 8px 24px -8px rgba(0,0,0,.7)}
+.mk:hover .tip{display:block}
+.lad .jump{color:#f5c451;cursor:pointer}
 #srvbadge{font-size:12px;padding:3px 10px;border-radius:99px;background:#262a30;color:#9aa0a6}
 
 .scroller{flex:1;overflow:auto;padding:16px 18px 60vh}
@@ -834,6 +867,15 @@ _SURVEY_JS = """
     if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
   }
 
+  // 问过的框按时间顺序编号 ①②③ —— 侧栏对话里写「框③」，你就能对上左边那个框
+  function askedIndex(i){
+    var n = -1;
+    marks().forEach(function(m, k){ if (m.q) { n++; if (k === i) n = n; } });
+    var c = -1;
+    for (var k = 0; k <= i; k++){ if (marks()[k] && marks()[k].q) c++; }
+    return c < 0 ? 0 : c;
+  }
+
   function layerOf(n){ return stage.querySelector('.layer[data-layer="' + n + '"]'); }
   function figOf(n){ return stage.querySelector('figure.pg[data-p="' + n + '"]'); }
 
@@ -855,15 +897,21 @@ _SURVEY_JS = """
       d.className = "mk" + (m.q ? " q" : "");
       d.style.left = r[0] + "%"; d.style.top = r[1] + "%";
       d.style.width = r[2] + "%"; d.style.height = r[3] + "%";
-      var qb = document.createElement("button");
-      qb.className = "qbtn"; qb.textContent = m.q ? "❓ 改问题" : "❓ 提问";
-      qb.dataset.askmk = String(x.i); d.appendChild(qb);
+      // ★ ① 不再有「❓ 提问」按钮 —— 拖完框直接打字问，少两步。
+      //   拖完那一刻光标就进侧栏输入框（见 pointerup）。
       var db = document.createElement("button");
       db.className = "del"; db.textContent = "🗑";
       db.dataset.delmk = String(x.i); d.appendChild(db);
+      // ★ ② 问过的框编号 + 悬停显示 AI 那句话，和侧栏对话对得上
       if (m.q){
-        var t = document.createElement("div");
-        t.className = "qtext"; t.textContent = m.q; d.appendChild(t);
+        var num = document.createElement("div");
+        num.className = "num";
+        num.textContent = String(askedIndex(x.i) + 1);
+        d.appendChild(num);
+        var tip = document.createElement("div");
+        tip.className = "tip";
+        tip.innerHTML = "我问：" + esc(m.q) + (m.a ? "<br><br>AI：" + esc(m.a) : "");
+        d.appendChild(tip);
       }
       layer.appendChild(d);
     });
@@ -927,12 +975,16 @@ _SURVEY_JS = """
     var m = { p: n, r: r.map(function(v){ return Math.round(v*10)/10; }), q: "",
               t: new Date().toISOString().slice(0,16).replace("T"," ") };
     marks().push(m); save(); render();
-    // 拖框也要有反馈 —— 用户原话「他显示已经…我也不知道成没成功」
     var ok = srvPost("/api/mark", { course: window.__COURSE__ || "", at: m.t,
                                     lesson: document.body.dataset.lesson,
                                     mark: { p:m.p, r:m.r, q:m.q, t:m.t } },
                      function(j){ toast(j && j.ok ? "已记下（进账本了）" : "已记下（本地，服务没应）"); });
-    if (!ok) toast("已记下（本地 —— 没连上服务，最后要导出）");
+    // ★ ① 光标直接进侧栏输入框 —— 拖完就能打字，不用再点任何按钮
+    activeMark = marks().length - 1;
+    updateCtx();
+    var qb = document.getElementById("qbox");
+    if (qb){ showTab("ai"); qb.focus(); }
+    else if (!ok) toast("已记下（本地 —— 没连上服务，最后要导出）");
   });
 
   // ---- 编辑器 ----
@@ -1020,8 +1072,8 @@ _SURVEY_JS = """
       es.forEach(function(en){
         if (en.isIntersecting){
           curPage = parseInt(en.target.dataset.p, 10);
-          var pn = document.getElementById("pno");
-          if (pn) pn.textContent = "第 " + curPage + " / " + PAGES.length + " 页";
+          var pi = document.getElementById("pinput");
+          if (pi && document.activeElement !== pi) pi.value = String(curPage);
         }
       });
     }, { rootMargin: "-45% 0px -50% 0px" });
@@ -1079,6 +1131,7 @@ _SURVEY_JS = """
   }
 
   window.__reloadLadder = loadLadder;
+  window.__redraw = function(){ try { render(); } catch(e){} };
 
   // ---- 页签 ----
   function showTab(name){
@@ -1123,28 +1176,65 @@ _SURVEY_JS = """
       }).catch(function(){ box.innerHTML = '<div class="hint">读不到知识点。</div>'; });
   }
 
+  // 当前正在针对哪个框问（① 拖完自动指向它；点侧栏对话里的「框③」也能切过来）
+  var activeMark = -1;
+  function updateCtx(){
+    var el = document.getElementById("qctx");
+    if (!el) return;
+    var m = marks()[activeMark];
+    if (m){
+      el.className = "qctx on";
+      el.textContent = "正在问：第 " + m.p + " 页的框"
+        + (m.q ? "（框" + (askedIndex(activeMark) + 1) + "）" : "")
+        + " — 这块会被读出来当依据";
+    } else {
+      el.className = "qctx";
+      el.textContent = "还没选框 —— 在左边拖一个框，或在当前页直接提问";
+    }
+  }
+
   // ---- 侧栏 AI 常驻输入：上下文 = 当前页 ----
   function sendQ(){
     var box = document.getElementById("qbox");
     var q = (box.value || "").trim();
     if (!q) return;
     box.value = "";
-    var pg = curPage;
-    var pm = null;
-    // 取当前页**最后一个**标记：它的坐标就是要交给视觉模型的那一块。
-    // 用户原话：「但你的问题和我的划线没关系啊」—— 根因就是坐标没发上去。
-    marks().forEach(function(m){ if (m.p === pg) pm = m; });
+    var pm = marks()[activeMark];
+    if (!pm){
+      marks().forEach(function(m){ if (m.p === curPage) pm = m; });
+    }
+    var pg = (pm && pm.p) || curPage;
+    // ★ ① 把问题写回这个框（框变绿 + 编号 + 悬停能看）
+    if (pm && !pm.q){ pm.q = q; save(); render(); }
     ladderAsk({ session: (document.body.dataset.lesson || "") + ":p" + pg,
                 page: pg, selection: (pm && pm.q) || "",
                 rect: (pm && pm.r) || null,
                 pageText: (PAGES[pg - 1] || {}).t || "" },
-              document.getElementById("p-ai"), q);
+              document.getElementById("p-ai"), q, pm);
   }
   var _qs = document.getElementById("qsend");
   if (_qs) _qs.addEventListener("click", sendQ);
   var _qb = document.getElementById("qbox");
   if (_qb) _qb.addEventListener("keydown", function(e){
     if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendQ(); }
+  });
+
+  // ★ ③ 敲页码直接跳（132 页靠滚太慢）
+  var _pi = document.getElementById("pinput");
+  if (_pi) _pi.addEventListener("keydown", function(e){
+    if (e.key !== "Enter") return;
+    var n = parseInt(_pi.value, 10);
+    if (n >= 1 && n <= PAGES.length) jumpTo(n);
+    else _pi.value = String(curPage);
+    _pi.blur();
+  });
+  // `/` 聚焦输入框（少一次鼠标）
+  document.addEventListener("keydown", function(e){
+    if (e.key === "/" && e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA"){
+      e.preventDefault();
+      var b = document.getElementById("qbox");
+      if (b){ showTab("ai"); b.focus(); }
+    }
   });
 
   function start(){
@@ -1191,8 +1281,10 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <div class="wrap">
 <main id="main">
   <div class="bar">
-    <b id="pno">第 1 / {len(plist)} 页</b>
-    <span class="hint">滚轮往下看 · <b>拖框 = 标记</b> · 框上点 <b>❓</b> = 提问</span>
+    <span class="hint">第</span>
+    <input id="pinput" value="1" inputmode="numeric">
+    <span class="hint">/ {len(plist)} 页</span>
+    <span class="hint">滚轮往下 · <b>拖个框就能问</b></span>
     <span class="hint" id="mkcount"></span>
     <button id="clrpage">清空本页</button>
     <button id="topbtn">回顶部</button>
@@ -1213,9 +1305,10 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
   </div>
 
   <div class="panel on" id="p-ai">
+    <div id="qctx" class="qctx"></div>
     <div id="ladderflow">
-      <div class="turn ctx">在左边拖一个框标记，或直接在这里提问 ——
-        它会<b>先反问你</b>，连续卡壳才给答案。上下文用它所在的那一页课件。</div>
+      <div class="turn ctx">在左边拖一个框 —— <b>拖完直接在这里打字问</b>就行。
+        它会先反问你，连续卡壳才给答案；<b>框里那一小块</b>会被读出来当依据。</div>
     </div>
     <div class="lrow">
       <input id="qbox" placeholder="问点什么…（或输入「别问了直接讲」）">
