@@ -36,6 +36,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     (PASSES if ok else FAILS).append(f"{name}{(' — ' + detail) if detail else ''}")
 
 
+def _try_gbk(raw: bytes) -> str:
+    """.bat 能不能按 GBK 解开（cmd 就是按系统 ANSI 码页读它的）。解不开返回空串。"""
+    try:
+        return raw.decode("gbk")
+    except UnicodeDecodeError:
+        return ""
+
+
 # ---------------------------------------------------------------- 1 卡壳判定
 
 for t in ("不知道", "不会", "答不上来", "想不出来", "没思路", "我放弃", "算了",
@@ -141,6 +149,29 @@ check("★ 静态路由拒绝目录穿越（.. 不许逃出库）",
 _src = __import__("inspect").getsource(V.Handler._static)
 check("  _static 里有 ../ 与绝对路径的拦截", "startswith(\"..\")" in _src
       and "isabs" in _src, _src[:200])
+
+# ---------------------------------------------------------------- 6 一键启动的 .bat
+
+# ★ 回归（真实事故，用户截图报的）：.bat 写成 UTF-8 → cmd.exe 按 GBK 解析 →
+#   每行中文变乱码，**而且乱码行被当成命令执行**，连 `python run.py serve` 都被啃掉，
+#   服务压根没起来，用户看到的就是"连不上大模型"。
+#   `chcp 65001` 救不了：cmd 是先解析、后执行。
+BAT = os.path.join(PROJ, "启动学习库.bat")
+check(".bat 放在项目根（跟 run.py 并排，不然 cd %~dp0 后找不到 run.py）",
+      os.path.isfile(BAT), BAT)
+if os.path.isfile(BAT):
+    raw = open(BAT, "rb").read()
+    check("★ .bat 能被 **GBK** 解码（cmd 就是按系统 ANSI 码页读它的）",
+          True if _try_gbk(raw) else False,
+          "解不开 = 中文会变乱码并被当成命令执行")
+    txt = _try_gbk(raw) or ""
+    check("★ 关键命令行在（字面量，不许被乱码啃掉）",
+          "python run.py serve" in txt)
+    check("  用 chcp 936（和控制台同码页）", "chcp 936" in txt)
+    check("  以 @echo off 开头", txt.lstrip().startswith("@echo off"))
+    check("  有 pause（出错时窗口不闪退，用户看得到原因）", "pause" in txt)
+    check("  没有 UTF-8 BOM（BOM 会让 cmd 把第一行认成乱码）",
+          not raw.startswith(b"\xef\xbb\xbf"), str(list(raw[:3])))
 
 # ---------------------------------------------------------------- 汇总
 
