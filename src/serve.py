@@ -109,6 +109,32 @@ _SESSIONS: dict[str, list[dict]] = {}
 _LOCK = threading.Lock()
 
 
+def kcs_flat(library_root: str, course: str) -> list[dict]:
+    """把知识点骨架摊平成列表（带上页码），给侧栏的「知识点」页用。"""
+    import json as _json
+    p = os.path.join(library_root, course, ".ledger", "kcs.json")
+    if not os.path.isfile(p):
+        return []
+    try:
+        d = _json.load(open(p, encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict] = []
+    for ch in d.get("chapters") or []:
+        for k in ch.get("kcs") or []:
+            out.append({
+                "id": k.get("id"), "label": k.get("label"),
+                "page": k.get("page"), "part": k.get("part"),
+                "type": k.get("type"), "importance": k.get("importance"),
+                "hub": bool(k.get("is_hub")),
+                "points": (k.get("points") or [])[:3],
+                "questions": [q.get("q") for q in (k.get("questions") or []) if q.get("q")],
+                "lecture": ch.get("label") or ch.get("id"),
+            })
+    out.sort(key=lambda x: (x.get("page") or 0))
+    return out
+
+
 def ask_once(library_root: str, payload: dict) -> dict:
     """一次追问。返回 `{ok, text, stalls, gave_answer}`。"""
     sid = str(payload.get("session") or "default")
@@ -314,6 +340,11 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/c/([^/]+)/(.+)$", path)
             if m:
                 return self._static(f"{m.group(1)}/{m.group(2)}", self.library_root)
+            # 侧栏「知识点」页要用：这门课的知识点骨架（含页码，点了能跳回那一页）
+            if path == "/api/kcs":
+                q = urllib.parse.parse_qs(parsed.query)
+                c3 = (q.get("course") or [self.course or ""])[0]
+                return self._json({"ok": True, "kcs": kcs_flat(self.library_root, c3)})
             # 兼容旧链接（/lessons/<课>/<文件> 与 /assets/<课>/<路径>）
             m = re.match(r"^/lessons/([^/]+)/(.+)$", path)
             if m:

@@ -178,6 +178,28 @@ check("  传课程目录也能读到", len(S.ladder_of(os.path.join(ROOT2, "课A
 check("  课程里有 ladder 字段（不是只存在内存）",
       bool(S.load_study(os.path.join(ROOT2, "课A"))["lessons"]["课A:讲:节:x"].get("ladder")))
 
+# ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
+
+KCSDIR = os.path.join(ROOT, "库K")
+os.makedirs(os.path.join(KCSDIR, "生物", ".ledger"), exist_ok=True)
+json.dump({"version": 1, "chapters": [{"id": "L1", "label": "第一章", "kcs": [
+    {"id": "L1.2", "label": "第二个", "page": 9, "type": "concept",
+     "importance": "must", "is_hub": True, "points": ["a", "b", "c", "d"],
+     "questions": [{"q": "你问过的问题"}]},
+    {"id": "L1.1", "label": "第一个", "page": 3, "type": "principle",
+     "importance": "key", "points": [], "questions": []},
+]}]}, open(os.path.join(KCSDIR, "生物", ".ledger", "kcs.json"), "w",
+          encoding="utf-8"), ensure_ascii=False)
+_ks = V.kcs_flat(KCSDIR, "生物")
+check("★ /api/kcs：摊平所有知识点", len(_ks) == 2, str(len(_ks)))
+check("★ 按页码排序（侧栏里顺序才对）", [k["page"] for k in _ks] == [3, 9],
+      str([k["page"] for k in _ks]))
+check("  带上了页码/重要度/枢纽标记", _ks[1]["hub"] is True
+      and _ks[1]["importance"] == "must")
+check("  要点截到前 3 条（侧栏放不下）", len(_ks[1]["points"]) == 3)
+check("  带上他在这一页问过的问题", _ks[1]["questions"] == ["你问过的问题"])
+check("没有骨架的课返回空表、不炸", V.kcs_flat(KCSDIR, "没有这门课") == [])
+
 # ---------------------------------------------------------------- 5 目录穿越
 
 check("★ 静态路由拒绝目录穿越（.. 不许逃出库）",

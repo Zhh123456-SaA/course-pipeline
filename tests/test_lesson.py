@@ -213,6 +213,21 @@ check("★ survey：当前页靠滚动位置判定（IntersectionObserver），�
 check("★ survey：拖框后有明确反馈（用户原话「我也不知道成没成功」）",
       'id="toast"' in h_sv and "已记下" in h_sv)
 check("★ survey：拖框即写账本（不等导出）", '"/api/mark"' in h_sv)
+# ---- 侧栏（用户原话：「一共 180 多页，滚到最底下不现实，我想你需要搞一个侧边栏…
+#      一边课件+圈画提问，一边 ai，同时后备的学习、知识点归档功能也要集成好」）----
+check("★ survey：左右两栏（左课件 / 右侧栏）",
+      '<main id="main">' in h_sv and '<aside id="side">' in h_sv
+      and 'id="scroller"' in h_sv)
+check("★ survey：侧栏有四个页签（问 AI / 标记 / 问过的 / 知识点）",
+      all(f'data-tab="{t}"' in h_sv for t in ("ai", "marks", "hist", "kcs")))
+check("★ survey：AI 常驻输入框在侧栏里（不用先画框才能问）",
+      'id="qbox"' in h_sv and 'id="qsend"' in h_sv)
+check("★ survey：对话流固定在侧栏", 'id="ladderflow"' in h_sv)
+check("★ survey：知识点页（归档集成）", 'id="p-kcs"' in h_sv and "loadKcs" in h_sv)
+check("★ survey：滚的是容器不是整页（侧栏不跟着滚）",
+      'id="scroller"' in h_sv and ".scroller{flex:1;overflow:auto" in h_sv)
+check("  点页码/知识点能跳页", "function jumpTo" in h_sv)
+
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))
 

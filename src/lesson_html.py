@@ -658,11 +658,11 @@ _NET_JS = """
   // 抄 Flagrare/llm-tutor 的五级提示阶梯：先反问他该往哪想；连续卡壳 3 次、
   // 或明说「别问了直接讲」，才给完整讲解，且给完必须再问一个反向验证题。
   function ladderAsk(ctx, box, question){
-    var flow = box.querySelector(".ladder");
+    // box 参数保留但不再用：对话流固定在侧栏 #ladderflow 里
+    var flow = document.getElementById("ladderflow");
     var q = (question || "").trim();
     if (!q) return;
     if (ctx.first === undefined) ctx.first = q;
-    flow.style.display = "block";
     var mine = document.createElement("div");
     mine.className = "turn me"; mine.textContent = q;
     flow.appendChild(mine);
@@ -693,20 +693,30 @@ _NET_JS = """
 
 _SURVEY_CSS = """
 *{box-sizing:border-box}
-body{margin:0;background:#16181c;color:#e8e6e3;
-  font:16px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.bar{position:sticky;top:0;z-index:20;display:flex;gap:12px;align-items:center;
-  padding:10px 18px;background:#1e2126;border-bottom:1px solid #2c3036;flex-wrap:wrap}
+html,body{height:100%}
+body{margin:0;background:#16181c;color:#e8e6e3;overflow:hidden;
+  font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+
+/* ★ 左右两栏：左边课件滚动，右边固定侧栏。
+   用户原话：「一共 180 多页，滚到最底下不现实，我想你需要搞一个侧边栏」。 */
+.wrap{display:flex;height:100vh}
+main#main{flex:1;min-width:0;display:flex;flex-direction:column}
+aside#side{width:400px;flex:0 0 400px;border-left:1px solid #2c3036;background:#1a1d22;
+  display:flex;flex-direction:column;min-height:0}
+@media (max-width:1100px){ aside#side{width:340px;flex-basis:340px} }
+
+.bar{display:flex;gap:10px;align-items:center;padding:9px 16px;background:#1e2126;
+  border-bottom:1px solid #2c3036;flex-wrap:wrap;flex:0 0 auto}
 .bar b{font-variant-numeric:tabular-nums}
-button{font:inherit;font-size:14px;padding:6px 14px;border-radius:8px;cursor:pointer;
+button{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;
   border:1px solid #2c3036;background:#262a30;color:#e8e6e3}
 button:hover{border-color:#7fc9a0;color:#7fc9a0}
 button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
-.hint{font-size:13px;color:#9aa0a6}
-.stage{max-width:1100px;margin:22px auto;padding:0 18px}
-/* ★ 连续滚动：所有页竖着摞起来，滚轮往下看 —— 用户原话
-   「我希望课件能通过滚轮下移显示，而不是点击翻页」 */
-figure.pg{position:relative;margin:0 0 18px;line-height:0;border-radius:10px;
+.hint{font-size:12px;color:#9aa0a6}
+#srvbadge{font-size:12px;padding:3px 10px;border-radius:99px;background:#262a30;color:#9aa0a6}
+
+.scroller{flex:1;overflow:auto;padding:16px 18px 60vh}
+figure.pg{position:relative;margin:0 0 16px;line-height:0;border-radius:10px;
   overflow:hidden;box-shadow:0 10px 40px -12px rgba(0,0,0,.6)}
 figure.pg img{width:100%;display:block;background:#fff;user-select:none;-webkit-user-drag:none}
 figure.pg figcaption{position:absolute;left:10px;top:10px;font-size:12px;line-height:1.6;
@@ -717,49 +727,59 @@ figure.pg.tome figcaption{background:#2f6f4e}
 .mk{position:absolute;border:2px solid #f5c451;background:rgba(245,196,81,.22);
   border-radius:3px;cursor:pointer}
 .mk.q{border-color:#7fc9a0;background:rgba(127,201,160,.22)}
+.mk.sel{outline:2px solid #fff}
 .mk .qbtn{position:absolute;right:-2px;bottom:-2px;transform:translateY(100%);
-  font-size:12px;padding:2px 7px;background:#2f6f4e;border-color:#2f6f4e;color:#fff;
+  font-size:11px;padding:1px 6px;background:#2f6f4e;border-color:#2f6f4e;color:#fff;
   border-radius:0 0 6px 6px;line-height:1.4}
 .mk .del{position:absolute;left:-2px;bottom:-2px;transform:translateY(100%);
-  font-size:12px;padding:2px 7px;background:#7f1d1d;border-color:#7f1d1d;color:#fff;
+  font-size:11px;padding:1px 6px;background:#7f1d1d;border-color:#7f1d1d;color:#fff;
   border-radius:0 0 6px 6px;line-height:1.4}
-.mk .qtext{position:absolute;left:0;top:100%;margin-top:20px;font-size:12px;
-  background:#1e2126;border:1px solid #2c3036;border-radius:6px;padding:3px 8px;
-  color:#7fc9a0;white-space:nowrap;max-width:420px;overflow:hidden;
-  text-overflow:ellipsis;line-height:1.6}
-#editor{position:fixed;z-index:40;display:none;background:#1e2126;border:1px solid #2c3036;
-  border-radius:10px;padding:10px;box-shadow:0 12px 40px -10px rgba(0,0,0,.7);width:340px}
-#editor.on{display:block}
-#editor textarea{width:100%;min-height:64px;padding:8px 10px;border-radius:8px;
-  border:1px solid #2c3036;background:#16181c;color:#e8e6e3;font:inherit;font-size:14px;
-  resize:vertical}
-#editor .row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
-.mkbox{max-width:1100px;margin:26px auto 80px;padding:0 18px}
-.mkbox h2{font-size:17px;margin:0 0 10px}
-.mkitem{display:flex;gap:10px;align-items:flex-start;font-size:14px;padding:7px 0;
-  border-bottom:1px solid #2c3036}
+.mk .qtext{position:absolute;left:0;top:100%;margin-top:20px;font-size:11px;
+  background:#1e2126;border:1px solid #2c3036;border-radius:6px;padding:2px 7px;
+  color:#7fc9a0;white-space:nowrap;max-width:360px;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.5}
+
+/* ---- 侧栏 ---- */
+.tabs{display:flex;border-bottom:1px solid #2c3036;flex:0 0 auto}
+.tabs button{flex:1;border:0;border-radius:0;background:transparent;padding:11px 6px;
+  color:#9aa0a6;font-size:13px}
+.tabs button.on{color:#7fc9a0;box-shadow:inset 0 -2px 0 #7fc9a0}
+.panel{flex:1;overflow:auto;padding:12px 14px;display:none;min-height:0}
+.panel.on{display:block}
+#p-ai{display:none;flex-direction:column;padding:0}
+#p-ai.on{display:flex}
+#ladderflow{flex:1;overflow:auto;padding:12px 14px;min-height:0}
+.turn{margin:7px 0;padding:8px 12px;border-radius:10px;line-height:1.65;
+  white-space:pre-wrap;font-size:14px}
+.turn.me{background:#243026;color:#b8e0c8;margin-left:24px}
+.turn.ai{background:#232830;color:#dfe4ea;margin-right:24px}
+.turn.note{background:#33290f;color:#e0c675;font-size:12px}
+.turn.ctx{background:#1e2126;color:#9aa0a6;font-size:12px;border:1px dashed #2c3036}
+.lrow{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #2c3036;flex:0 0 auto}
+.lrow input{flex:1;padding:9px 11px;border-radius:8px;border:1px solid #2c3036;
+  background:#16181c;color:#e8e6e3;font:inherit;font-size:14px}
+.lrow input:focus{outline:2px solid #7fc9a0;border-color:transparent}
+.mkitem{display:flex;gap:9px;align-items:flex-start;font-size:13px;padding:7px 6px;
+  border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
+.mkitem:hover{background:#232830}
 .mkitem .p{color:#9aa0a6;white-space:nowrap;font-variant-numeric:tabular-nums}
 .mkitem .q{color:#7fc9a0}
-.mkitem a{color:#f5c451;cursor:pointer;text-decoration:none}
-#srvbadge{font-size:12px;padding:3px 10px;border-radius:99px;background:#262a30;
-  color:#9aa0a6}
-#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
-  background:#2f6f4e;color:#fff;font-size:14px;padding:9px 20px;border-radius:99px;
-  opacity:0;transition:opacity .18s,transform .18s;pointer-events:none;z-index:70}
-#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
-.lad{border-bottom:1px solid #2c3036;padding:10px 0}
+.mkitem .star{color:#f5c451}
+.kci{padding:8px 6px;border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
+.kci:hover{background:#232830}
+.kci .t{font-size:14px;display:block}
+.kci .m{font-size:12px;color:#9aa0a6;margin-top:2px}
+.kci .bd{background:#33290f;color:#e0c675;border-radius:99px;padding:0 7px;font-size:11px}
+.lad{border-bottom:1px solid #2c3036;padding:9px 4px}
 .ladh{font-size:12px;color:#9aa0a6;margin-bottom:5px}
 .ladh a{color:#f5c451;cursor:pointer}
 .ladh .gave{background:#33290f;color:#e0c675;border-radius:99px;padding:1px 8px}
-.ladder{display:none;max-height:260px;overflow:auto;margin-top:8px;padding:8px;
-  background:#16181c;border:1px solid #2c3036;border-radius:8px;font-size:13px}
-.turn{margin:5px 0;padding:6px 10px;border-radius:8px;line-height:1.6;white-space:pre-wrap}
-.turn.me{background:#243026;color:#b8e0c8}
-.turn.ai{background:#232830;color:#dfe4ea}
-.turn.note{background:#33290f;color:#e0c675;font-size:12px}
-.lrow{display:flex;gap:8px;margin-top:8px}
-.lrow input{flex:1;padding:8px 10px;border-radius:8px;border:1px solid #2c3036;
-  background:#16181c;color:#e8e6e3;font:inherit;font-size:14px}
+.lad .turn{margin:4px 0}
+
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+  background:#2f6f4e;color:#fff;font-size:14px;padding:9px 20px;border-radius:99px;
+  opacity:0;transition:opacity .18s,transform .18s;pointer-events:none;z-index:70}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 """
 
 _SURVEY_JS = """
@@ -805,6 +825,11 @@ _SURVEY_JS = """
       frag.appendChild(fig);
     });
     stage.innerHTML = ""; stage.appendChild(frag);
+  }
+
+  function jumpTo(n){
+    var f = figOf(n);
+    if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
   }
 
   function layerOf(n){ return stage.querySelector('.layer[data-layer="' + n + '"]'); }
@@ -1053,6 +1078,70 @@ _SURVEY_JS = """
 
   window.__reloadLadder = loadLadder;
 
+  // ---- 页签 ----
+  function showTab(name){
+    document.querySelectorAll(".tabs button").forEach(function(b){
+      b.classList.toggle("on", b.dataset.tab === name);
+    });
+    document.querySelectorAll(".panel").forEach(function(p){
+      p.classList.toggle("on", p.id === "p-" + name);
+    });
+    if (name === "kcs") loadKcs();
+    if (name === "hist") loadLadder();
+  }
+  document.querySelectorAll(".tabs button").forEach(function(b){
+    b.addEventListener("click", function(){ showTab(b.dataset.tab); });
+  });
+
+  // ---- 知识点（侧栏第三页）----
+  // 用户原话：「同时后备的**学习、知识点归档**功能也要集成好」
+  function loadKcs(){
+    var box = document.getElementById("kclist");
+    if (!SRV.on){ box.innerHTML = '<div class="hint">要连上服务才能看知识点。</div>'; return; }
+    fetch("/api/kcs?course=" + encodeURIComponent(window.__COURSE__ || ""),
+          { cache: "no-store" })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        var ks = (j && j.kcs) || [];
+        if (!ks.length){ box.innerHTML = '<div class="hint">这门课还没有知识点骨架。</div>'; return; }
+        var byPage = {};
+        marks().forEach(function(m){ byPage[m.p] = (byPage[m.p] || 0) + 1; });
+        box.innerHTML = "";
+        ks.forEach(function(k){
+          var d = document.createElement("div");
+          d.className = "kci"; d.dataset.kcpage = String(k.page || 1);
+          var n = byPage[k.page] || 0;
+          d.innerHTML = '<span class="t">' + esc(k.label || "") +
+            (k.hub ? ' <span class="hint">🧭</span>' : "") +
+            (n ? ' <span class="bd">你标记过 ' + n + '</span>' : "") + "</span>" +
+            '<span class="m">第 ' + (k.page || "?") + " 页 · " +
+            esc(k.importance || "") + (k.part ? " · " + esc(k.part) : "") + "</span>";
+          box.appendChild(d);
+        });
+      }).catch(function(){ box.innerHTML = '<div class="hint">读不到知识点。</div>'; });
+  }
+
+  // ---- 侧栏 AI 常驻输入：上下文 = 当前页 ----
+  function sendQ(){
+    var box = document.getElementById("qbox");
+    var q = (box.value || "").trim();
+    if (!q) return;
+    box.value = "";
+    var pg = curPage;
+    var pm = null;
+    marks().forEach(function(m){ if (m.p === pg && m.q) pm = m; });
+    ladderAsk({ session: (document.body.dataset.lesson || "") + ":p" + pg,
+                page: pg, selection: (pm && pm.q) || "",
+                pageText: (PAGES[pg - 1] || {}).t || "" },
+              document.getElementById("p-ai"), q);
+  }
+  var _qs = document.getElementById("qsend");
+  if (_qs) _qs.addEventListener("click", sendQ);
+  var _qb = document.getElementById("qbox");
+  if (_qb) _qb.addEventListener("keydown", function(e){
+    if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendQ(); }
+  });
+
   function start(){
     buildAll(); render(); watchScroll();
     srvPing(function(){ if (SRV.on){ toast("已连上服务：标记会直接进账本"); loadLadder(); } });
@@ -1092,45 +1181,50 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <title>过课件 · {esc(outline.get('title') or chapter.get('label') or course_label)}</title>
 <style>{_SURVEY_CSS}</style>
 </head>
-<body data-lesson="{esc(lesson_id)}" data-mode="survey">
+<body data-lesson="{esc(lesson_id)}" data-mode="survey" data-course="{esc(course_label)}">
 
-<div class="bar">
-  <b id="pno">第 1 / {len(plist)} 页</b>
-  <span class="hint"><b>滚轮往下看</b> · 在课件上拖一个框 = 标记 · 框上点 <b>❓</b> = 提问</span>
-  <span class="hint" id="mkcount"></span>
-  <button id="clrpage">清空当前页标记</button>
-  <button id="topbtn">回到顶部</button>
-  <button id="expbtn" class="primary">导出我的标记与提问</button>
-  <span id="srvbadge"></span>
-</div>
+<div class="wrap">
+<main id="main">
+  <div class="bar">
+    <b id="pno">第 1 / {len(plist)} 页</b>
+    <span class="hint">滚轮往下看 · <b>拖框 = 标记</b> · 框上点 <b>❓</b> = 提问</span>
+    <span class="hint" id="mkcount"></span>
+    <button id="clrpage">清空本页</button>
+    <button id="topbtn">回顶部</button>
+    <button id="expbtn">导出</button>
+    <span id="srvbadge"></span>
+  </div>
+  <div class="scroller" id="scroller">
+    <div id="stage"></div>
+  </div>
+</main>
 
-<div class="stage" id="stage"></div>
+<aside id="side">
+  <div class="tabs">
+    <button data-tab="ai" class="on">💬 问 AI</button>
+    <button data-tab="marks">✍️ 标记</button>
+    <button data-tab="hist">🕘 问过的</button>
+    <button data-tab="kcs">📚 知识点</button>
+  </div>
 
-<div class="mkbox">
-  <h2>我标记过的（点页码跳过去）</h2>
-  <div id="mklist"></div>
-</div>
+  <div class="panel on" id="p-ai">
+    <div id="ladderflow">
+      <div class="turn ctx">在左边拖一个框标记，或直接在这里提问 ——
+        它会<b>先反问你</b>，连续卡壳才给答案。上下文用它所在的那一页课件。</div>
+    </div>
+    <div class="lrow">
+      <input id="qbox" placeholder="问点什么…（或输入「别问了直接讲」）">
+      <button id="qsend" class="primary">发送</button>
+    </div>
+  </div>
 
-<div class="mkbox">
-  <h2>我问过 AI 的（含它的反问）—— 从账本里读的，关掉页面也还在</h2>
-  <div id="ladderlist"><div class="hint">还没有追问记录。</div></div>
+  <div class="panel" id="p-marks"><div id="mklist"></div></div>
+  <div class="panel" id="p-hist"><div id="ladderlist"></div></div>
+  <div class="panel" id="p-kcs"><div id="kclist"><div class="hint">加载中…</div></div></div>
+</aside>
 </div>
 
 <div id="toast"></div>
-
-<div id="editor">
-  <textarea placeholder="这里你想问什么？（Ctrl+Enter 保存，Esc 取消）"></textarea>
-  <div class="row">
-    <button id="cancelmk">取消</button>
-    <button id="askai">问 AI（先反问你）</button>
-    <button id="savemk" class="primary">保存问题</button>
-  </div>
-  <div class="ladder"></div>
-  <div class="lrow" id="lrow" style="display:none">
-    <input placeholder="说说你的想法 / 或者输入“别问了直接讲”">
-    <button id="lsend">回复</button>
-  </div>
-</div>
 
 <script>window.__PAGES__ = {_json.dumps(plist, ensure_ascii=False)};
 window.__COURSE__ = {_json.dumps(course_label, ensure_ascii=False)};</script>
