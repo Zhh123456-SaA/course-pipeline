@@ -702,9 +702,15 @@ button:hover{border-color:#7fc9a0;color:#7fc9a0}
 button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 .hint{font-size:13px;color:#9aa0a6}
 .stage{max-width:1100px;margin:22px auto;padding:0 18px}
-.pg{position:relative;line-height:0;border-radius:10px;overflow:hidden;
-  box-shadow:0 10px 40px -12px rgba(0,0,0,.6)}
-.pg img{width:100%;display:block;background:#fff;user-select:none;-webkit-user-drag:none}
+/* ★ 连续滚动：所有页竖着摞起来，滚轮往下看 —— 用户原话
+   「我希望课件能通过滚轮下移显示，而不是点击翻页」 */
+figure.pg{position:relative;margin:0 0 18px;line-height:0;border-radius:10px;
+  overflow:hidden;box-shadow:0 10px 40px -12px rgba(0,0,0,.6)}
+figure.pg img{width:100%;display:block;background:#fff;user-select:none;-webkit-user-drag:none}
+figure.pg figcaption{position:absolute;left:10px;top:10px;font-size:12px;line-height:1.6;
+  background:rgba(0,0,0,.55);color:#fff;border-radius:99px;padding:2px 10px;
+  pointer-events:none;font-variant-numeric:tabular-nums}
+figure.pg.tome figcaption{background:#2f6f4e}
 .layer{position:absolute;inset:0;cursor:crosshair}
 .mk{position:absolute;border:2px solid #f5c451;background:rgba(245,196,81,.22);
   border-radius:3px;cursor:pointer}
@@ -734,7 +740,11 @@ button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 .mkitem .q{color:#7fc9a0}
 .mkitem a{color:#f5c451;cursor:pointer;text-decoration:none}
 #srvbadge{font-size:12px;padding:3px 10px;border-radius:99px;background:#262a30;
-  color:#9aa0a6;margin-left:auto}
+  color:#9aa0a6}
+#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
+  background:#2f6f4e;color:#fff;font-size:14px;padding:9px 20px;border-radius:99px;
+  opacity:0;transition:opacity .18s,transform .18s;pointer-events:none;z-index:70}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 .ladder{display:none;max-height:260px;overflow:auto;margin-top:8px;padding:8px;
   background:#16181c;border:1px solid #2c3036;border-radius:8px;font-size:13px}
 .turn{margin:5px 0;padding:6px 10px;border-radius:8px;line-height:1.6;white-space:pre-wrap}
@@ -750,60 +760,81 @@ _SURVEY_JS = """
 (function(){
   var KEY = "c2md:" + document.body.dataset.lesson;
   var st = {};
-  try { st = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch(e) { st = {}; }
-  function save(){ try { localStorage.setItem(KEY, JSON.stringify(st)); } catch(e) {} }
+  try { st = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch(e){ st = {}; }
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(st)); } catch(e){} }
   function marks(){ return st.__marks || (st.__marks = []); }
 
   var PAGES = window.__PAGES__ || [];
-  var cur = 0;
-  var img = document.getElementById("pimg");
-  var layer = document.getElementById("layer");
-  var pno = document.getElementById("pno");
-  var drag = null, editorFor = -1;
+  var stage = document.getElementById("stage");
+  var drag = null, editorFor = -1, curPage = 1;
 
-  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
-
-  function go(i){
-    cur = clamp(i, 0, PAGES.length - 1);
-    img.src = PAGES[cur].src;
-    pno.textContent = (cur + 1) + " / " + PAGES.length;
-    hideEditor();
-    render();
-    try { history.replaceState(null, "", "#p" + (cur + 1)); } catch(e) {}
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function esc(s){
+    return String(s).replace(/[&<>"]/g, function(c){
+      return ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]; });
   }
 
-  function pageMarks(){
-    var p = cur + 1;
-    return marks().map(function(m, i){ return { m: m, i: i }; })
-                  .filter(function(x){ return x.m.p === p; });
+  function toast(msg){
+    var t = document.getElementById("toast");
+    if (!t) return;
+    t.textContent = msg; t.classList.add("on");
+    clearTimeout(t.__h);
+    t.__h = setTimeout(function(){ t.classList.remove("on"); }, 1600);
   }
+
+  // ---- 一次性把所有页铺出来（滚轮连着看，不点翻页）----
+  function buildAll(){
+    var frag = document.createDocumentFragment();
+    PAGES.forEach(function(p){
+      var fig = document.createElement("figure");
+      fig.className = "pg"; fig.dataset.p = String(p.n); fig.id = "p" + p.n;
+      var img = document.createElement("img");
+      img.src = p.src; img.alt = "第 " + p.n + " 页";
+      if (p.n > 3) { img.loading = "lazy"; }     // 前几页立刻出，其余懒加载
+      var cap = document.createElement("figcaption");
+      cap.textContent = "第 " + p.n + " 页";
+      var layer = document.createElement("div");
+      layer.className = "layer"; layer.dataset.layer = String(p.n);
+      fig.appendChild(img); fig.appendChild(cap); fig.appendChild(layer);
+      frag.appendChild(fig);
+    });
+    stage.innerHTML = ""; stage.appendChild(frag);
+  }
+
+  function layerOf(n){ return stage.querySelector('.layer[data-layer="' + n + '"]'); }
+  function figOf(n){ return stage.querySelector('figure.pg[data-p="' + n + '"]'); }
 
   function render(){
+    // 只重画有标记的那几页，不整段重建（不然滚动位置会跳）
+    var byPage = {};
+    marks().forEach(function(m, i){ (byPage[m.p] || (byPage[m.p] = [])).push({ m:m, i:i }); });
+    PAGES.forEach(function(p){ drawPage(p.n, byPage[p.n] || []); });
+    renderList();
+  }
+
+  function drawPage(n, list){
+    var layer = layerOf(n), fig = figOf(n);
+    if (!layer) return;
     layer.innerHTML = "";
-    pageMarks().forEach(function(x){
+    list.forEach(function(x){
       var m = x.m, r = m.r;
       var d = document.createElement("div");
       d.className = "mk" + (m.q ? " q" : "");
       d.style.left = r[0] + "%"; d.style.top = r[1] + "%";
       d.style.width = r[2] + "%"; d.style.height = r[3] + "%";
-      d.dataset.mi = String(x.i);
       var qb = document.createElement("button");
       qb.className = "qbtn"; qb.textContent = m.q ? "❓ 改问题" : "❓ 提问";
-      qb.dataset.askmk = String(x.i);
-      d.appendChild(qb);
+      qb.dataset.askmk = String(x.i); d.appendChild(qb);
       var db = document.createElement("button");
       db.className = "del"; db.textContent = "🗑";
-      db.dataset.delmk = String(x.i);
-      d.appendChild(db);
+      db.dataset.delmk = String(x.i); d.appendChild(db);
       if (m.q){
         var t = document.createElement("div");
-        t.className = "qtext"; t.textContent = m.q;
-        d.appendChild(t);
+        t.className = "qtext"; t.textContent = m.q; d.appendChild(t);
       }
       layer.appendChild(d);
     });
-    renderList();
+    if (fig) fig.classList.toggle("tome", list.length > 0);
   }
 
   function renderList(){
@@ -814,12 +845,13 @@ _SURVEY_JS = """
                     all.filter(function(m){ return m.q; }).length + " 条）") : "";
     if (!all.length){ box.innerHTML = '<div class="hint">还没有标记。在课件上拖一个框试试。</div>'; return; }
     box.innerHTML = "";
-    all.slice().sort(function(a, b){ return a.p - b.p; }).forEach(function(m){
+    all.slice().sort(function(a,b){ return a.p - b.p; }).forEach(function(m){
       var row = document.createElement("div");
       row.className = "mkitem";
+      var p = document.createElement("span"); p.className = "p";
       var a = document.createElement("a");
       a.textContent = "第 " + m.p + " 页"; a.dataset.gopage = String(m.p);
-      var p = document.createElement("span"); p.className = "p"; p.appendChild(a);
+      p.appendChild(a);
       var s = document.createElement("span");
       s.innerHTML = m.q ? ('<span class="q">❓ ' + esc(m.q) + "</span>")
                         : "⭐ 标记（未提问）";
@@ -828,14 +860,50 @@ _SURVEY_JS = """
     });
   }
 
-  function esc(s){
-    return String(s).replace(/[&<>"]/g, function(c){
-      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
-    });
-  }
+  // ---- 拖框 ----
+  stage.addEventListener("pointerdown", function(e){
+    var layer = e.target.closest && e.target.closest(".layer");
+    if (!layer || e.target !== layer) return;
+    var b = layer.getBoundingClientRect();
+    drag = { n: parseInt(layer.dataset.layer, 10), el: layer,
+             x0: (e.clientX - b.left) / b.width * 100,
+             y0: (e.clientY - b.top) / b.height * 100, el2: null };
+    layer.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", function(e){
+    if (!drag) return;
+    var b = drag.el.getBoundingClientRect();
+    var x = (e.clientX - b.left) / b.width * 100;
+    var y = (e.clientY - b.top) / b.height * 100;
+    if (!drag.el2){
+      drag.el2 = document.createElement("div");
+      drag.el2.className = "mk"; drag.el.appendChild(drag.el2);
+    }
+    var l = clamp(Math.min(drag.x0, x), 0, 100), t = clamp(Math.min(drag.y0, y), 0, 100);
+    var w = clamp(Math.abs(x - drag.x0), 0, 100 - l), h = clamp(Math.abs(y - drag.y0), 0, 100 - t);
+    drag.el2.style.left = l + "%"; drag.el2.style.top = t + "%";
+    drag.el2.style.width = w + "%"; drag.el2.style.height = h + "%";
+    drag.rect = [l, t, w, h];
+  });
+  stage.addEventListener("pointerup", function(e){
+    if (!drag) return;
+    var r = drag.rect, n = drag.n;
+    var small = !r || r[2] <= 1.5 || r[3] <= 1.5;
+    drag = null;
+    if (small){ render(); return; }          // 太小的框多半是误触
+    var m = { p: n, r: r.map(function(v){ return Math.round(v*10)/10; }), q: "",
+              t: new Date().toISOString().slice(0,16).replace("T"," ") };
+    marks().push(m); save(); render();
+    // 拖框也要有反馈 —— 用户原话「他显示已经…我也不知道成没成功」
+    var ok = srvPost("/api/mark", { course: window.__COURSE__ || "", at: m.t,
+                                    lesson: document.body.dataset.lesson,
+                                    mark: { p:m.p, r:m.r, q:m.q, t:m.t } },
+                     function(j){ toast(j && j.ok ? "已记下（进账本了）" : "已记下（本地，服务没应）"); });
+    if (!ok) toast("已记下（本地 —— 没连上服务，最后要导出）");
+  });
 
+  // ---- 编辑器 ----
   function hideEditor(){ document.getElementById("editor").classList.remove("on"); editorFor = -1; }
-
   function showEditor(i, x, y){
     var m = marks()[i]; if (!m) return;
     editorFor = i;
@@ -843,158 +911,114 @@ _SURVEY_JS = """
     var ta = ed.querySelector("textarea");
     ta.value = m.q || "";
     ed.style.left = Math.min(x, window.innerWidth - 360) + "px";
-    ed.style.top = Math.min(y, window.innerHeight - 200) + "px";
-    ed.classList.add("on");
-    ta.focus();
+    ed.style.top = Math.min(y, window.innerHeight - 220) + "px";
+    ed.classList.add("on"); ta.focus();
   }
-
-  // ---- 拖框 ----
-  layer.addEventListener("pointerdown", function(e){
-    if (e.target !== layer) return;
-    var b = layer.getBoundingClientRect();
-    drag = { x0: (e.clientX - b.left) / b.width * 100,
-             y0: (e.clientY - b.top) / b.height * 100, el: null };
-    layer.setPointerCapture(e.pointerId);
-  });
-  layer.addEventListener("pointermove", function(e){
-    if (!drag) return;
-    var b = layer.getBoundingClientRect();
-    var x = (e.clientX - b.left) / b.width * 100;
-    var y = (e.clientY - b.top) / b.height * 100;
-    if (!drag.el){
-      drag.el = document.createElement("div");
-      drag.el.className = "mk";
-      layer.appendChild(drag.el);
-    }
-    var l = clamp(Math.min(drag.x0, x), 0, 100), t = clamp(Math.min(drag.y0, y), 0, 100);
-    var w = clamp(Math.abs(x - drag.x0), 0, 100 - l), h = clamp(Math.abs(y - drag.y0), 0, 100 - t);
-    drag.el.style.left = l + "%"; drag.el.style.top = t + "%";
-    drag.el.style.width = w + "%"; drag.el.style.height = h + "%";
-    drag.rect = [l, t, w, h];
-  });
-  layer.addEventListener("pointerup", function(e){
-    if (!drag) return;
-    var r = drag.rect;
-    // 太小的框多半是误触，丢掉（课件页上真实的标记区总是有点面积）
-    if (r && r[2] > 1.5 && r[3] > 1.5){
-      marks().push({ p: cur + 1, r: r.map(function(v){ return Math.round(v * 10) / 10; }),
-                     q: "", t: new Date().toISOString().slice(0, 16).replace("T", " ") });
-      save();
-    }
-    drag = null; render();
-  });
+  function commitEditor(){
+    if (editorFor < 0) return;
+    var v = document.getElementById("editor").querySelector("textarea").value.trim();
+    var m = marks()[editorFor];
+    m.q = v; save();
+    srvPost("/api/mark", { course: window.__COURSE__ || "", at: m.t,
+                           lesson: document.body.dataset.lesson,
+                           mark: { p:m.p, r:m.r, q:m.q, t:m.t } },
+            function(j){ toast(j && j.ok ? "已进账本" : "存在本地（服务没应）"); });
+    hideEditor(); render();
+  }
 
   document.addEventListener("click", function(e){
     var t = e.target;
     if (t.dataset && t.dataset.askmk !== undefined){
       var r = t.closest(".mk").getBoundingClientRect();
-      showEditor(parseInt(t.dataset.askmk, 10), r.left, r.bottom + 8);
-      return;
+      showEditor(parseInt(t.dataset.askmk, 10), r.left, r.bottom + 8); return;
     }
     if (t.dataset && t.dataset.delmk !== undefined){
-      marks().splice(parseInt(t.dataset.delmk, 10), 1);
-      save(); render(); return;
+      marks().splice(parseInt(t.dataset.delmk, 10), 1); save(); render(); return;
     }
     if (t.dataset && t.dataset.gopage !== undefined){
-      go(parseInt(t.dataset.gopage, 10) - 1); return;
+      var f = figOf(parseInt(t.dataset.gopage, 10));
+      if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
+      return;
     }
     if (t.id === "savemk"){ commitEditor(); return; }
     if (t.id === "cancelmk"){ hideEditor(); return; }
-    if (t.id === "prev"){ go(cur - 1); return; }
-    if (t.id === "next"){ go(cur + 1); return; }
-    if (t.id === "expbtn"){ exportLog(); return; }
-    // 追问 AI（阶梯）：先反问他，不直接给答案
     if (t.id === "askai"){
       var v = document.getElementById("editor").querySelector("textarea").value.trim();
       if (!v){ document.getElementById("editor").querySelector("textarea").focus(); return; }
       commitEditor();
-      var ed = document.getElementById("editor");
       document.getElementById("lrow").style.display = "flex";
-      ladderAsk({
-        session: (document.body.dataset.lesson || "") + ":p" + (cur + 1),
-        page: cur + 1,
-        selection: "",
-        pageText: (PAGES[cur] || {}).t || ""
-      }, ed, v);
+      var pg = marks()[Math.max(0, editorFor)] || { p: curPage };
+      ladderAsk({ session: (document.body.dataset.lesson||"") + ":p" + pg.p,
+                  page: pg.p, selection: "",
+                  pageText: (PAGES[pg.p-1] || {}).t || "" },
+                document.getElementById("editor"), v);
       return;
     }
     if (t.id === "lsend"){
       var inp = document.querySelector("#lrow input");
-      var q = (inp.value || "").trim();
-      if (!q) return;
-      inp.value = "";
-      ladderAsk({
-        session: (document.body.dataset.lesson || "") + ":p" + (cur + 1),
-        page: cur + 1, selection: "",
-        pageText: (PAGES[cur] || {}).t || ""
-      }, document.getElementById("editor"), q);
+      var q = (inp.value || "").trim(); if (!q) return; inp.value = "";
+      var pg2 = (marks()[editorFor] || {}).p || curPage;
+      ladderAsk({ session: (document.body.dataset.lesson||"") + ":p" + pg2,
+                  page: pg2, selection: "",
+                  pageText: (PAGES[pg2-1] || {}).t || "" },
+                document.getElementById("editor"), q);
       return;
     }
+    if (t.id === "expbtn"){ exportLog(); return; }
     if (t.id === "clrpage"){
-      var p = cur + 1;
-      st.__marks = marks().filter(function(m){ return m.p !== p; });
-      save(); render(); return;
+      var pn = curPage;
+      st.__marks = marks().filter(function(m){ return m.p !== pn; });
+      save(); render(); toast("已清空第 " + pn + " 页的标记");
+      return;
     }
+    if (t.id === "topbtn"){ window.scrollTo({ top:0, behavior:"smooth" }); return; }
   });
-
-  function commitEditor(){
-    if (editorFor < 0) return;
-    var v = document.getElementById("editor").querySelector("textarea").value.trim();
-    marks()[editorFor].q = v;
-    save();
-    // 服务在的话**直接进账本** —— 用户原话：「我导出了之后需要做什么，我希望这是一键式的」
-    var m = marks()[editorFor];
-    srvPost("/api/mark", {
-      course: window.__COURSE__ || "", at: m.t, lesson: document.body.dataset.lesson,
-      mark: { p: m.p, r: m.r, q: m.q, t: m.t }
-    }, function(j){
-      if (j && j.ok){ flash("已进账本"); }
-    });
-    hideEditor(); render();
-  }
-
-  function flash(msg){
-    var b = document.getElementById("srvbadge");
-    if (!b) return;
-    var old = b.textContent;
-    b.textContent = "✓ " + msg;
-    setTimeout(function(){ b.textContent = old; }, 1500);
-  }
 
   document.addEventListener("keydown", function(e){
-    if (e.target.tagName === "TEXTAREA") {
+    if (e.target.tagName === "TEXTAREA"){
       if (e.key === "Escape") hideEditor();
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEditor();
-      return;
     }
-    if (e.key === "ArrowLeft") go(cur - 1);
-    if (e.key === "ArrowRight") go(cur + 1);
   });
+
+  // 当前页 = 滚到屏幕中间那一页（顶栏显示用）
+  function watchScroll(){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(en){
+        if (en.isIntersecting){
+          curPage = parseInt(en.target.dataset.p, 10);
+          var pn = document.getElementById("pno");
+          if (pn) pn.textContent = "第 " + curPage + " / " + PAGES.length + " 页";
+        }
+      });
+    }, { rootMargin: "-45% 0px -50% 0px" });
+    PAGES.forEach(function(p){ var f = figOf(p.n); if (f) io.observe(f); });
+  }
 
   function exportLog(){
     var lesson = document.body.dataset.lesson || "lesson";
-    var out = { lesson: lesson, title: document.title, mode: "survey",
-                exported_at: new Date().toISOString(), marks: marks() };
-    var blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+    var out = { lesson:lesson, title:document.title, mode:"survey",
+                exported_at:new Date().toISOString(), marks:marks() };
+    var blob = new Blob([JSON.stringify(out, null, 1)], { type:"application/json" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "study-" + lesson.replace(/[^0-9A-Za-z\\u4e00-\\u9fff]+/g, "_") + ".json";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
-    var b = document.getElementById("expbtn");
-    if (b){ b.textContent = "已导出"; setTimeout(function(){ b.textContent = "导出我的标记与提问"; }, 1800); }
+    toast("已导出到下载目录");
   }
 
-  window.addEventListener("load", function(){
-    srvPing();
+  function start(){
+    buildAll(); render(); watchScroll();
+    srvPing(function(){ if (SRV.on) toast("已连上服务：标记会直接进账本"); });
     var m = /^#p(\\d+)$/.exec(location.hash || "");
-    go(m ? parseInt(m[1], 10) - 1 : 0);
-  });
-  if (document.readyState === "complete") {
-    srvPing();
-    var m0 = /^#p(\\d+)$/.exec(location.hash || "");
-    go(m0 ? parseInt(m0[1], 10) - 1 : 0);
+    if (m){
+      var f = figOf(parseInt(m[1], 10));
+      if (f) setTimeout(function(){ f.scrollIntoView({ block:"start" }); }, 300);
+    }
   }
+  if (document.readyState === "loading") window.addEventListener("load", start);
+  else start();
 })();
 """
 
@@ -1026,32 +1050,23 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <body data-lesson="{esc(lesson_id)}" data-mode="survey">
 
 <div class="bar">
-  <button id="prev">‹ 上一页</button>
-  <b id="pno">1 / {len(plist)}</b>
-  <button id="next">下一页 ›</button>
-  <span class="hint">← → 翻页 · <b>在课件上拖一个框 = 标记</b> · 框上点 <b>❓</b> = 提问</span>
+  <b id="pno">第 1 / {len(plist)} 页</b>
+  <span class="hint"><b>滚轮往下看</b> · 在课件上拖一个框 = 标记 · 框上点 <b>❓</b> = 提问</span>
   <span class="hint" id="mkcount"></span>
-  <button id="clrpage">清空本页标记</button>
+  <button id="clrpage">清空当前页标记</button>
+  <button id="topbtn">回到顶部</button>
   <button id="expbtn" class="primary">导出我的标记与提问</button>
   <span id="srvbadge"></span>
 </div>
 
-<div class="stage">
-  <div class="pg">
-    <img id="pimg" alt="课件页">
-    <div class="layer" id="layer"></div>
-  </div>
-  <div class="hint" style="margin-top:10px">
-    这一页<b>不问你、不给答案</b> —— 就是把课件过一遍，看到重要的拖个框，不懂的点 ❓。
-    框上点 ❓ 写问题时，如果本地服务开着，可以直接<b>追问 AI</b>
-    （它会先反问你，不直接给答案）。
-  </div>
-</div>
+<div class="stage" id="stage"></div>
 
 <div class="mkbox">
   <h2>我标记过的（点页码跳过去）</h2>
   <div id="mklist"></div>
 </div>
+
+<div id="toast"></div>
 
 <div id="editor">
   <textarea placeholder="这里你想问什么？（Ctrl+Enter 保存，Esc 取消）"></textarea>

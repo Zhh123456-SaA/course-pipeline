@@ -192,15 +192,27 @@ _plist = [{"no": 1, "src": "../assets/s/p001.jpg"},
 h_sv = L.build_survey("测试课", ch, _plist, html_name="T")
 check("survey：课型标记正确", 'data-mode="survey"' in h_sv)
 check("survey：页图列表嵌进去了（翻页靠它）", "__PAGES__" in h_sv and "p002.jpg" in h_sv)
-check("survey：有可拖框的覆盖层", 'id="layer"' in h_sv and "pointerdown" in h_sv)
+check("survey：有可拖框的覆盖层（覆盖层由 JS 逐页生成，不是单个静态节点）",
+      'className = "layer"' in h_sv and "pointerdown" in h_sv)
 check("survey：拖框后会生成标记（坐标按百分比，与分辨率无关）",
-      "pointerup" in h_sv and 'style.left = r[0] + "%"' in h_sv)
+      "pointerup" in h_sv and 'style.left = l + "%"' in h_sv)
 check("survey：框上能提问", "❓" in h_sv and "askmk" in h_sv)
 check("survey：**不出题、不给答案**（它只是「过一遍」）",
       "data-q=" not in h_sv and 'class="answer"' not in h_sv
       and "看答案" not in h_sv and "data-grade" not in h_sv)
 check("survey：能导出（标记要能进账本）", "exportLog" in h_sv and "marks" in h_sv)
-check("survey：支持键盘翻页", "ArrowLeft" in h_sv and "ArrowRight" in h_sv)
+
+# ★ 回归（用户实测反馈）：「我希望课件能通过**滚轮下移**显示，而不是点击翻页」
+check("★ survey：连续滚动（一次性铺出所有页，不再点翻页）",
+      "buildAll" in h_sv and 'id="stage"' in h_sv
+      and 'id="prev"' not in h_sv and 'id="next"' not in h_sv)
+check("★ survey：每页都有自己的可拖框层（data-layer=N）",
+      'layer.dataset.layer' in h_sv or 'dataset.layer = String(p.n)' in h_sv)
+check("★ survey：当前页靠滚动位置判定（IntersectionObserver），不靠按钮",
+      "IntersectionObserver" in h_sv)
+check("★ survey：拖框后有明确反馈（用户原话「我也不知道成没成功」）",
+      'id="toast"' in h_sv and "已记下" in h_sv)
+check("★ survey：拖框即写账本（不等导出）", '"/api/mark"' in h_sv)
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))
 
