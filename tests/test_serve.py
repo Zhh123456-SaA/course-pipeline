@@ -85,7 +85,7 @@ p2 = V.build_ask_prompt("X", "", "还是不会", hist, 27)
 check("★ prompt 里报出**连续卡壳次数**（AI 靠它决定该不该给答案）",
       "连续卡壳 2 次" in p2, p2[-120:])
 check("  把之前的来回也带进去", "你觉得呢？" in p2 and "再想想原文最后一句" in p2)
-check("  没有框选时给兜底文案（不硬塞空串）", "他没有框选" in V.build_ask_prompt("X", "", "q", [], 1))
+check("  没有框选时给兜底文案（不硬塞空串）", "没框选" in V.build_ask_prompt("X", "", "q", [], 1))
 check("  历史过长时只取最近 8 条（不无限膨胀）",
       V.build_ask_prompt("X", "", "q",
                          [{"role": "user", "text": f"第{i}轮" * 5, "stall": False}
@@ -199,6 +199,34 @@ check("  带上了页码/重要度/枢纽标记", _ks[1]["hub"] is True
 check("  要点截到前 3 条（侧栏放不下）", len(_ks[1]["points"]) == 3)
 check("  带上他在这一页问过的问题", _ks[1]["questions"] == ["你问过的问题"])
 check("没有骨架的课返回空表、不炸", V.kcs_flat(KCSDIR, "没有这门课") == [])
+
+# ---------------------------------------------------------------- 4d 框里读出来
+
+# 用户原话：「问的确实很好，**但你的问题和我的划线没关系啊**」。
+# 根因：他画的框在程序眼里只是**图片上的四个百分比数字** —— "框里是什么"程序不知道，
+# 所以只能拿整页文字去问。修法：把框那一小块裁出来交给视觉模型（抄隔壁 deepreader）。
+#
+# ★ 这里踩过一个只有实跑才抓得到的坑：`from src.vision import VisionClient` 之前
+#   **必须先调一次 engine.settings()** —— 是它把真源目录加进 sys.path 的。
+#   顺序反了会 ModuleNotFoundError，整条"读框"静默失败，AI 又只能拿整页瞎问。
+_src = __import__("inspect").getsource(V.read_region)
+check("★ read_region：先取 settings（顺带把真源加进 sys.path）再 import 视觉类",
+      _src.index("engine.settings()") < _src.index("from src.vision import"),
+      "顺序反了会 ModuleNotFoundError")
+check("★ read_region：没有 rect 时明确拒绝、不炸", not V.read_region(ROOT, "x", 1, None, "", "").get("ok"))
+check("★ read_region：rect 长度不对也拒绝", not V.read_region(ROOT, "x", 1, [1, 2], "", "").get("ok"))
+check("★ read_region：找不到页图时给出可读的原因",
+      "页图" in (V.read_region(ROOT, "没有这门课", 1, [0, 0, 50, 50], "", "").get("msg") or ""),
+      str(V.read_region(ROOT, "没有这门课", 1, [0, 0, 50, 50], "", "")))
+check("★ read_region：框太小会拒绝（避免拿一条缝去问模型）",
+      "太小" in (V.read_region(KCSDIR, "生物", 1, [0, 0, 0.1, 0.1], "", "").get("msg") or "")
+      or not V.read_region(KCSDIR, "生物", 1, [0, 0, 0.1, 0.1], "", "").get("ok"))
+check("★ page_image：没有账本时返回空串、不炸", V.page_image(ROOT, "没有这门课", 1) == "")
+check("★ 追问 prompt 里框选内容是**主角**，整页原文降为背景",
+      "以它为主" in V.build_ask_prompt("整页文字", "框里读出来的", "问", [], 1)
+      and "仅供背景" in V.build_ask_prompt("整页文字", "框里读出来的", "问", [], 1))
+check("  没框选时 prompt 也说得清楚",
+      "没框选" in V.build_ask_prompt("整页文字", "", "问", [], 1))
 
 # ---------------------------------------------------------------- 5 目录穿越
 

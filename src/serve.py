@@ -95,8 +95,12 @@ def build_ask_prompt(page_text: str, selection: str, question: str,
             rows.append(f"- {who}：{(h.get('text') or '').strip()[:200]}")
         hist = "\n【之前的来回】\n" + "\n".join(rows)
     stalls = sum(1 for h in history if h.get("role") == "user" and h.get("stall"))
-    return (f"【课件第 {page} 页原文】\n{(page_text or '')[:1500]}\n\n"
-            f"【他框选的那一段】\n{(selection or '（他没有框选，只提了问题）')[:400]}\n\n"
+    sel = (selection or "").strip()
+    sel_block = (f"\n【他框选的那一块 —— **这是他真正在问的地方，请以它为主**】\n{sel[:900]}\n"
+                 if sel else "\n（他没框选，只提了问题）\n")
+    return (f"【他框的那一块的所在页·整页原文（仅供背景，别拿它当重点）】\n"
+            f"{(page_text or '')[:1200]}\n"
+            f"{sel_block}\n"
             f"【他的提问】\n{question}\n"
             f"{hist}\n\n"
             f"【他已经连续卡壳 {stalls} 次】\n"
@@ -135,6 +139,89 @@ def kcs_flat(library_root: str, course: str) -> list[dict]:
     return out
 
 
+def page_image(library_root: str, course: str, page: int) -> str:
+    """找第 N 页的页图绝对路径（从账本的 pages 记录里取，不猜文件名/扩展名）。"""
+    led = os.path.join(library_root, course, ".ledger")
+    src = os.path.join(led, "source.json")
+    if not (os.path.isfile(src) and os.path.isdir(os.path.join(led, "pages"))):
+        return ""
+    try:
+        s = json.load(open(src, encoding="utf-8")).get("sources") or {}
+        for stem, rec in s.items():
+            slug = rec.get("slug") or ""
+            pf = os.path.join(led, "pages", stem + ".json")
+            if not (slug and os.path.isfile(pf)):
+                continue
+            d = json.load(open(pf, encoding="utf-8"))
+            for p in d.get("pages") or []:
+                if int(p.get("no") or 0) == int(page):
+                    img = p.get("image") or ""
+                    if img:
+                        full = os.path.join(library_root, course, "assets", slug, img)
+                        if os.path.isfile(full):
+                            return full
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def read_region(library_root: str, course: str, page: int, rect: list,
+                page_text: str, question: str) -> dict:
+    """**把框里那一小块裁出来，交给视觉模型读**。
+
+    用户原话：「问的确实很好，**但你的问题和我的划线没关系啊**」。
+
+    根因：他画的框在程序眼里只是**图片上的四个百分比数字** ——
+    「框里是什么」程序根本不知道，所以只能拿整页文字去问，自然跟他的框对不上。
+    隔壁 deepreader 早就是这么解的（裁剪 → 视觉模型），这里直接复用它的
+    `VisionClient.explain_region()`，不重写。
+
+    失败一律返回 `{"ok": False, ...}` —— 读不出来不该让追问整条断掉。
+    """
+    if not (isinstance(rect, list) and len(rect) == 4) or not page:
+        return {"ok": False, "msg": "没有框选区域"}
+    full = page_image(library_root, course, page)
+    if not full:
+        return {"ok": False, "msg": "找不到这一页的页图"}
+    try:
+        from PIL import Image                      # noqa: PLC0415
+        im = Image.open(full)
+        w, h = im.size
+        x, y, bw, bh = [float(v) for v in rect]
+        box = (max(0, int(x / 100 * w)), max(0, int(y / 100 * h)),
+               min(w, int((x + bw) / 100 * w)), min(h, int((y + bh) / 100 * h)))
+        if box[2] - box[0] < 8 or box[3] - box[1] < 8:
+            return {"ok": False, "msg": "框太小了"}
+        crop = im.crop(box)
+        tmp_dir = os.path.join(library_root, course, "study", "crops")
+        os.makedirs(tmp_dir, exist_ok=True)
+        cp = os.path.join(tmp_dir, f"p{page}_{box[0]}_{box[1]}_{box[2]}_{box[3]}.png")
+        if not os.path.isfile(cp):
+            crop.save(cp)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return {"ok": False, "msg": f"裁剪失败：{type(e).__name__}: {e}"}
+
+    try:
+        # ★ 必须**先**拿 settings —— 这一步会把真源 ppt-deepreader 加进 sys.path。
+        #   反过来先 import `src.vision` 会 ModuleNotFoundError（实测踩到：
+        #   "读框里内容"整条静默失败，AI 只能拿整页文字瞎问）。
+        settings = engine.settings()
+        from src.vision import VisionClient        # noqa: PLC0415
+        vc = VisionClient(settings)
+        if not vc.enabled:
+            return {"ok": False, "msg": "没有配置视觉后端（读不了框里的内容）"}
+        r = vc.explain_region(cp, page_text=page_text[:1500],
+                              question=question or "这里在讲什么？", page_no=page)
+        return {"ok": True, "crop": cp,
+                "transcript": (r.get("transcript") or "").strip(),
+                "latex": (r.get("latex") or "").strip(),
+                "explanation": (r.get("explanation") or "").strip()}
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
+
+
 def ask_once(library_root: str, payload: dict) -> dict:
     """一次追问。返回 `{ok, text, stalls, gave_answer}`。"""
     sid = str(payload.get("session") or "default")
@@ -157,6 +244,24 @@ def ask_once(library_root: str, payload: dict) -> dict:
     ok, why = engine.available()
     if not ok:
         return {"ok": False, "msg": f"引擎不可用：{why}"}
+
+    # ★ 他画了框 → **先把框里那一小块读出来**，再拿它去追问。
+    #   不做这一步，AI 只能拿整页文字瞎问 ——
+    #   用户原话：「问的确实很好，**但你的问题和我的划线没关系啊**」。
+    region = {}
+    rect = payload.get("rect")
+    course = str(payload.get("course") or "")
+    if rect and page and course:
+        region = read_region(library_root, course, page, rect,
+                             page_text, question)
+        if region.get("ok"):
+            parts = [x for x in (region.get("transcript"),
+                                 region.get("latex"),
+                                 region.get("explanation")) if x]
+            selection = "【框里读出来的内容】\n" + "\n".join(parts)
+        with _LOCK:
+            hist.append({"role": "user", "text":
+                         f"[框选区域] 第 {page} 页 rect={rect}"})
 
     prompt = build_ask_prompt(page_text, selection, question, hist, page)
     try:

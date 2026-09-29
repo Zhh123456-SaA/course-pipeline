@@ -672,7 +672,9 @@ _NET_JS = """
     flow.scrollTop = flow.scrollHeight;
     srvPost("/api/ask", {
       course: window.__COURSE__ || "", session: ctx.session,
+      lesson: document.body.dataset.lesson || "",
       page: ctx.page, selection: ctx.selection || "",
+      rect: ctx.rect || null,                     // ★ 框的坐标 —— 服务端靠它裁图给视觉模型
       question: q, page_text: ctx.pageText || ""
     }, function(j){
       wait.textContent = j && j.ok ? j.text : ("（没能问到："
@@ -980,7 +982,7 @@ _SURVEY_JS = """
       document.getElementById("lrow").style.display = "flex";
       var pg = marks()[Math.max(0, editorFor)] || { p: curPage };
       ladderAsk({ session: (document.body.dataset.lesson||"") + ":p" + pg.p,
-                  page: pg.p, selection: "",
+                  page: pg.p, selection: "", rect: pg.r || null,
                   pageText: (PAGES[pg.p-1] || {}).t || "" },
                 document.getElementById("editor"), v);
       return;
@@ -1129,9 +1131,12 @@ _SURVEY_JS = """
     box.value = "";
     var pg = curPage;
     var pm = null;
-    marks().forEach(function(m){ if (m.p === pg && m.q) pm = m; });
+    // 取当前页**最后一个**标记：它的坐标就是要交给视觉模型的那一块。
+    // 用户原话：「但你的问题和我的划线没关系啊」—— 根因就是坐标没发上去。
+    marks().forEach(function(m){ if (m.p === pg) pm = m; });
     ladderAsk({ session: (document.body.dataset.lesson || "") + ":p" + pg,
                 page: pg, selection: (pm && pm.q) || "",
+                rect: (pm && pm.r) || null,
                 pageText: (PAGES[pg - 1] || {}).t || "" },
               document.getElementById("p-ai"), q);
   }
