@@ -218,8 +218,8 @@ check("★ survey：拖框即写账本（不等导出）", '"/api/mark"' in h_sv
 check("★ survey：左右两栏（左课件 / 右侧栏）",
       '<main id="main">' in h_sv and '<aside id="side">' in h_sv
       and 'id="scroller"' in h_sv)
-check("★ survey：侧栏有三个页签（问 AI / 标记与提问 / 知识点）",
-      all(f'data-tab="{t}"' in h_sv for t in ("ai", "marks", "kcs")))
+check("★ survey：侧栏有三个页签（问 AI / 我的对话 / 知识点）",
+      all(f'data-tab="{t}"' in h_sv for t in ("ai", "threads", "kcs")))
 check("★ survey：AI 常驻输入框在侧栏里（不用先画框才能问）",
       'id="qbox"' in h_sv and 'id="qsend"' in h_sv)
 check("★ survey：对话流固定在侧栏", 'id="ladderflow"' in h_sv)
@@ -260,15 +260,27 @@ _blocks = [b for b in _blocks if "function" in b]
 check("★ 每个 script 块都自带 esc（不许跨块调用）",
       len(_blocks) >= 2 and all("function esc(" in b for b in _blocks),
       f"{len(_blocks)} 个块")
-check("★ 页签合并成「标记与提问」（不再有重复的「问过的」）",
-      "标记与提问" in h_sv and 'data-tab="hist"' not in h_sv)
-check("★ 一条标记只出现一次（合并后不重复列两遍）",
-      h_sv.count("all.forEach(function(m, i){") == 1)
-check("★ 「我问：」是超链接，点了跳回那个框（用户明确要的）",
-      'className = "myq"' in h_sv and 'q.dataset.gopage' in h_sv)
-check("★ 整条标记也能点着跳回", "row.dataset.gopage" in h_sv)
-check("★ 标记条里直接带 AI 的回话（不用另开一个页签找）",
-      'className = "aia"' in h_sv)
+# ---- 用户原话：「那上面这个「标记」功能完全没有任何意义了，去掉吧」----
+# 去掉的只是**右边栏那份清单**（「已标记 N 处」+ 一条条「框1·第X页·我问…」）——
+# 它和下面的对话卡片说的是同一件事。**拖框必须留着**：那是给 AI 指
+# 「看这一小块」的唯一方式，删了 AI 就只剩整页文字（上次「AI 看不到图」就是这么来的）。
+check("★ 右边栏不再有「标记与提问」那份清单（页签改成「我的对话」）",
+      "标记与提问" not in h_sv and 'data-tab="hist"' not in h_sv)
+check("★ 顶栏也不再报「已标记 N 处」（标记的记账一并去掉）",
+      'id="mkcount"' not in h_sv and "已标记 \" + all.length" not in h_sv)
+check("★ 那份清单的渲染整块退休（不留半截死代码）",
+      "function renderList(" not in h_sv and "function renderThreads(" in h_sv)
+check("★ 清单的样式也一起退休（别留空规则让人以为还有 UI 在用）",
+      ".mkitem{" not in h_sv and ".myq{" not in h_sv and ".aia{" not in h_sv)
+check("★★ 拖框照旧 —— 这是给 AI 指「看这一小块」的方式，删不得",
+      "function pointerup" in h_sv or "pointerup" in h_sv)
+check("★ 框还在课件上：编号 + 悬停看 AI 回话 + 🗑 删除",
+      'className = "num"' in h_sv and 'className = "tip"' in h_sv
+      and 'className = "del"' in h_sv)
+check("★ 点框本身就能重新选中它（清单没了，框自己当把手）",
+      't.closest(".mk")' in h_sv and 'mkb.dataset.mkidx !== undefined' in h_sv)
+check("★ 没有对话时给一句人话的提示（不是空白页签）",
+      "还没有对话" in h_sv and "拖一个框" in h_sv)
 check("★ 从账本补 AI 回话时**不覆盖**已有的（免得把你刚看到的刷掉）",
       "!all[i].a && x.a" in h_sv)
 
@@ -281,7 +293,8 @@ check("★ 绝不把「问题」当「框选内容」传（两样必须分开）
 check("★ 刷新后恢复 activeMark（否则一问就没坐标 → AI 看不到图）",
       "activeMark = marks().length - 1" in h_sv)
 check("★ 点标记条 = 选中那个框（可手动重新指定）",
-      "activeMark = parseInt(t.dataset.mkidx, 10)" in h_sv)
+      "activeMark = parseInt(mkb.dataset.mkidx, 10)" in h_sv
+      and 'd.dataset.mkidx = String(x.i)' in h_sv)
 check("★ 以前的对话从账本读回来（关页面/换浏览器都还在）",
       "window.__hist = rows" in h_sv and "我的对话" in h_sv)
 # ★ 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」——

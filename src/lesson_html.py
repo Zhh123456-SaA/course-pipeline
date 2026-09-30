@@ -833,15 +833,11 @@ figure.pg.tome figcaption{background:#2f6f4e}
 .lrow input{flex:1;padding:9px 11px;border-radius:8px;border:1px solid #2c3036;
   background:#16181c;color:#e8e6e3;font:inherit;font-size:14px}
 .lrow input:focus{outline:2px solid #7fc9a0;border-color:transparent}
-.mkitem{display:block;font-size:13px;padding:8px 6px;
-  border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
-.mkh{display:flex;gap:8px;align-items:center;font-size:12px;color:#9aa0a6}
-.mkh .badge{background:#2f6f4e;color:#fff;border-radius:99px;padding:1px 8px;font-size:11px}
+/* 「标记清单」的样式（.mkitem / .mkh / .myq / .aia）已随那份清单一起退休：
+   用户原话「那上面这个「标记」功能完全没有任何意义了，去掉吧」。
+   别留空规则 —— 后来的人会以为还有一块 UI 在用它们。 */
 .histhead{margin:12px 0 4px;font-size:12px;color:#9aa0a6;border-top:1px dashed #2c3036;
   padding-top:10px}
-.myq{display:block;color:#7fc9a0;text-decoration:underline;margin-top:4px;
-  text-decoration-style:dotted;cursor:pointer}
-.myq:hover{color:#b8e0c8}
 
 /* ---- 子对话卡片（「我的对话」那段）---- */
 .histhead button.mini{float:right;margin-left:8px}
@@ -866,12 +862,6 @@ button.mini{font-size:12px;padding:2px 9px;border-radius:6px}
 .thread .ta{background:#232830;color:#dfe4ea;margin-right:6px}
 .thread .who{display:block;font-size:11px;color:#7c8288;margin-bottom:2px}
 .thread .tbar{display:flex;gap:8px;margin-top:8px}
-.aia{margin-top:5px;padding:6px 9px;background:#232830;border-radius:8px;color:#c7cdd4;
-  font-size:12px;line-height:1.6;white-space:pre-wrap;max-height:150px;overflow:auto}
-.mkitem:hover{background:#232830}
-.mkitem .p{color:#9aa0a6;white-space:nowrap;font-variant-numeric:tabular-nums}
-.mkitem .q{color:#7fc9a0}
-.mkitem .star{color:#f5c451}
 .kci{padding:8px 6px;border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
 .kci:hover{background:#232830}
 .kci .t{font-size:14px;display:block}
@@ -956,7 +946,7 @@ _SURVEY_JS = """
     var byPage = {};
     marks().forEach(function(m, i){ (byPage[m.p] || (byPage[m.p] = [])).push({ m:m, i:i }); });
     PAGES.forEach(function(p){ drawPage(p.n, byPage[p.n] || []); });
-    renderList();
+    renderThreads();
   }
 
   function drawPage(n, list){
@@ -967,6 +957,7 @@ _SURVEY_JS = """
       var m = x.m, r = m.r;
       var d = document.createElement("div");
       d.className = "mk" + (m.q ? " q" : "");
+      d.dataset.mkidx = String(x.i);       // 点框 = 选中它（清单去掉后它是唯一的把手）
       d.style.left = r[0] + "%"; d.style.top = r[1] + "%";
       d.style.width = r[2] + "%"; d.style.height = r[3] + "%";
       // ★ ① 不再有「❓ 提问」按钮 —— 拖完框直接打字问，少两步。
@@ -990,74 +981,37 @@ _SURVEY_JS = """
     if (fig) fig.classList.toggle("tome", list.length > 0);
   }
 
-  // ★ ② 「标记」和「问过的」本来是两份、内容重复 —— 合成一条。
-  //   一条 = 一个框，带「我问」超链接（③ 点了跳回那个框）+ AI 的回话。
-  function renderList(){
-    var box = document.getElementById("mklist");
-    var all = marks();
-    var asked = all.filter(function(m){ return m.q; }).length;
-    document.getElementById("mkcount").textContent =
-      all.length ? ("已标记 " + all.length + " 处（其中提问 " + asked + " 条）") : "";
-    if (!all.length){
-      box.innerHTML = '<div class="hint">还没有标记。在课件上拖一个框试试。</div>';
+  // ★ 用户原话：「那上面这个「标记」功能完全没有任何意义了，去掉吧」。
+  //   上面那份清单（「已标记 N 处」+ 一条条「框1 · 第X页 · 我问：… · AI：…」）
+  //   和下面的对话卡片**说的是同一件事**，留着只会让人左右对照。
+  //   去掉的只是**清单**：拖框照旧（那是给 AI 指"看这一小块"的方式），
+  //   框上的编号、悬停显示的 AI 回话、🗑 删除按钮全都还在课件上。
+  function renderThreads(){
+    var box = document.getElementById("thlist");
+    var ths = window.__threads || [];
+    box.innerHTML = "";
+
+    if (!ths.length){
+      box.innerHTML = '<div class="hint">还没有对话。在左边课件上**拖一个框**，'
+        + '拖完直接打字问就行 —— 问过的每一段来回都会收成一段对话，'
+        + '以后能点开重读、也能接着往下问。</div>';
       return;
     }
-    box.innerHTML = "";
-    var n = 0;
-    all.forEach(function(m, i){
-      var isQ = !!m.q;
-      if (isQ) n++;
-      var row = document.createElement("div");
-      row.className = "mkitem";
-      row.dataset.gopage = String(m.p);
-      row.dataset.mkidx = String(i);               // 点整条 = 选中这个框
-      var head = document.createElement("div");
-      head.className = "mkh";
-      head.innerHTML = (isQ ? '<span class="badge">框' + n + "</span>"
-                            : '<span class="star">⭐</span>')
-        + '<span class="p">第 ' + m.p + " 页</span>"
-        + '<span class="hint">' + (m.at || "") + "</span>";
-      row.appendChild(head);
-      if (isQ){
-        // ③ 「我问：xxx」本身就是超链接 —— 点它定位到那个框
-        var q = document.createElement("a");
-        q.className = "myq";
-        q.dataset.gopage = String(m.p);
-        q.dataset.mkidx = String(i);
-        q.textContent = "我问：" + m.q;
-        row.appendChild(q);
-      } else {
-        var t = document.createElement("div");
-        t.className = "hint"; t.textContent = "（只是标记，还没提问）";
-        row.appendChild(t);
-      }
-      if (m.a){
-        var a = document.createElement("div");
-        a.className = "aia";
-        a.textContent = "AI：" + m.a;
-        row.appendChild(a);
-      }
-      box.appendChild(row);
-    });
 
     // ★ 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」。
-    //   以前这里是平铺的一串「我问 / AI」，读起来像流水账。
-    //   现在按**一段一段的对话**收起来：标题 = 这段的第一问，点一下就展开
+    //   按**一段一段的对话**收起来：标题 = 这段的第一问，点一下就展开
     //   从头读到尾；还能「回到这一页」和「接着问」（接着问会把老的来回
     //   喂回给 AI，所以几个月后它照样知道你们聊过什么）。
-    var ths = window.__threads || [];
-    if (ths.length){
-      var th0 = document.createElement("div");
-      th0.className = "histhead";
-      var hb = document.createElement("button");
-      hb.id = "thall"; hb.className = "mini";
-      hb.textContent = (window.__allOpen ? "全部收起" : "全部展开");
-      th0.textContent = "我的对话（" + ths.length + " 段）";
-      th0.appendChild(hb);
-      box.appendChild(th0);
-      var op = window.__openTids || {};
-      ths.forEach(function(th){ box.appendChild(threadCard(th, !!op[th.tid])); });
-    }
+    var th0 = document.createElement("div");
+    th0.className = "histhead";
+    var hb = document.createElement("button");
+    hb.id = "thall"; hb.className = "mini";
+    hb.textContent = (window.__allOpen ? "全部收起" : "全部展开");
+    th0.textContent = ths.length + " 段对话 · 点标题展开读";
+    th0.appendChild(hb);
+    box.appendChild(th0);
+    var op = window.__openTids || {};
+    ths.forEach(function(th){ box.appendChild(threadCard(th, !!op[th.tid])); });
   }
 
   // 一段子对话 = 一张卡片：标题（第一问）+ 几轮 + 展开后的完整来回
@@ -1239,16 +1193,20 @@ _SURVEY_JS = """
     if (t.dataset && t.dataset.delmk !== undefined){
       marks().splice(parseInt(t.dataset.delmk, 10), 1); save(); render(); return;
     }
+    // ★ 点**框本身** = 选中这个框（之后问的就是它）+ 光标进输入框。
+    //   为什么需要：`activeMark` 只在内存里，刷新后会丢；以前是靠右边栏那份
+    //   标记清单点回来的，清单去掉后（用户：「标记功能没意义了，去掉吧」）
+    //   框自己就成了把手 —— 免得"想问这个框却问成了别的框"
+    //   （AI 会回"我看不到它具体画了啥"）。
+    var mkb = t.closest && t.closest(".mk");
+    if (mkb && mkb.dataset.mkidx !== undefined){
+      activeMark = parseInt(mkb.dataset.mkidx, 10);
+      updateCtx();
+      var qb4 = document.getElementById("qbox");
+      if (qb4){ showTab("ai"); qb4.focus(); }
+      return;
+    }
     if (t.dataset && t.dataset.gopage !== undefined){
-      // 点标记条 = **选中那个框**（之后就能问它）+ 跳过去 + 光标进输入框。
-      // 为什么需要：activeMark 只在内存里，刷新后会丢；点一下就能重新指定，
-      // 免得"想问这个框却问成了别的框"（AI 会回"我看不到它具体画了啥"）。
-      if (t.dataset.mkidx !== undefined){
-        activeMark = parseInt(t.dataset.mkidx, 10);
-        updateCtx();
-        var qb3 = document.getElementById("qbox");
-        if (qb3){ showTab("ai"); qb3.focus(); }
-      }
       var f = figOf(parseInt(t.dataset.gopage, 10));
       if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
       return;
@@ -1324,7 +1282,8 @@ _SURVEY_JS = """
 
   // ---- 从账本把追问历史读回来 ------------------------------------------
   // 用户原话：「那我在哪里查看我和 ai 的交互和反问呢」。
-  // 现在合并进「标记与提问」那一条上（不再单开一个重复的页签）。
+  // 两件事各归各位：`/api/ladder` 用来给**框**补 AI 回话（悬停能看），
+  // `/api/threads` 用来摆「我的对话」那栏。
   // 只在本地没有 AI 回话时补上（本地有就不覆盖，免得把你刚看到的刷掉）。
   function loadLadder(){
     var L = document.body.dataset.lesson || "";
@@ -1518,7 +1477,6 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
     <input id="pinput" value="1" inputmode="numeric">
     <span class="hint">/ {len(plist)} 页</span>
     <span class="hint">滚轮往下 · <b>拖个框就能问</b></span>
-    <span class="hint" id="mkcount"></span>
     <button id="clrpage">清空本页</button>
     <button id="topbtn">回顶部</button>
     <button id="expbtn">导出</button>
@@ -1532,7 +1490,7 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
 <aside id="side">
   <div class="tabs">
     <button data-tab="ai" class="on">💬 问 AI</button>
-    <button data-tab="marks">✍️ 标记与提问</button>
+    <button data-tab="threads">✍️ 我的对话</button>
     <button data-tab="kcs">📚 知识点</button>
   </div>
 
@@ -1548,7 +1506,7 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
     </div>
   </div>
 
-  <div class="panel" id="p-marks"><div id="mklist"></div></div>
+  <div class="panel" id="p-threads"><div id="thlist"></div></div>
   <div class="panel" id="p-kcs"><div id="kclist"><div class="hint">加载中…</div></div></div>
 </aside>
 </div>
