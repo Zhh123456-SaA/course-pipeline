@@ -225,6 +225,54 @@ check("  读回来的来回带着「卡壳」判定（阶梯的计数才不会�
 check("  要是不存在的 tid → 空表，不炸", V.seed_hist(LIB, LES, "根本没这段") == [])
 check("  空 tid → 空表（不去扫整个库）", V.seed_hist(LIB, LES, "") == [])
 
+# ---------------------------------------------------------------- 4b3 接着哪一段问
+# 真调 ask_once，但把**引擎换掉** —— 不联网、不烧 key。
+# 盯的是「换 tid = 换一段对话」这条：客户端点了「接着问」，
+# 服务端必须把**那一段**的来回从账本捞回来喂给 AI，而不是张冠李戴。
+_chat, _avail, _strip = V.engine.chat, V.engine.available, V.engine.strip_think
+_prompts: list[str] = []
+V.engine.available = lambda: (True, "ok")
+V.engine.strip_think = lambda s: (s or "").strip()
+
+
+def _fake_chat(system, prompt, **kw):
+    _prompts.append(prompt)
+    return ("你先说说膜上都有哪些成分？", {})
+
+
+V.engine.chat = _fake_chat
+try:
+    r1 = V.ask_once(LIB, {"session": "s1", "lesson": LES, "page": 27,
+                          "question": "那胆固醇到底干嘛的？", "tid": "m27-11_22_33_44"})
+    check("★ 追问把这一段对话的编号回给前端（卡片才摆得对）",
+          r1.get("ok") and r1.get("tid") == "m27-11_22_33_44", str(r1)[:140])
+    check("★ 接着一段**老**对话问：服务端从账本把前面的来回捞回来喂给 AI",
+          "那胆固醇在里头干嘛？" in _prompts[-1] and "还是不懂" in _prompts[-1],
+          _prompts[-1][-260:])
+    check("  新的一轮记进**同一段**（不是另起一段）",
+          any(x.get("tid") == "m27-11_22_33_44" and x["q"] == "那胆固醇到底干嘛的？"
+              for x in S.ladder_of(LIB, LES)))
+
+    V.ask_once(LIB, {"session": "s1", "lesson": LES, "page": 40,
+                     "question": "换成另一段了", "tid": "m40-9_9_9_9"})
+    check("★ 换了编号 = 换了对话：上一段的来回不再跟着（不糊成一团）",
+          "那胆固醇在里头干嘛？" not in _prompts[-1], _prompts[-1][-200:])
+
+    V.ask_once(LIB, {"session": "s1", "lesson": LES, "page": 27,
+                     "question": "不知道", "tid": "m27-11_22_33_44"})
+    check("  卡壳那句被标进账本（阶梯的 3 次计数后面还要用）",
+          any(x.get("stall") for x in S.ladder_of(LIB, LES) if x["q"] == "不知道"))
+    check("  换回来时老那段又接上了（前后能来回切）",
+          "那胆固醇在里头干嘛？" in _prompts[-1], _prompts[-1][-200:])
+
+    # 老版页面（不带 tid）也不能坏：按「节+页」兜底
+    r2 = V.ask_once(LIB, {"session": "旧页面:p3", "lesson": LES, "page": 3,
+                          "question": "没带编号的老客户端"})
+    check("  老页面不带 tid 也能用（服务端按「节+页」兜底，不炸）",
+          r2.get("ok") and r2.get("tid") == "旧页面:p3:p3", str(r2)[:120])
+finally:
+    V.engine.chat, V.engine.available, V.engine.strip_think = _chat, _avail, _strip
+
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 
 KCSDIR = os.path.join(ROOT, "库K")

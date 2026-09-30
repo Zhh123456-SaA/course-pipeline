@@ -269,7 +269,7 @@ python tests\test_lesson.py        # HTML 课：不截断 + 多课型 + 页图�
 python tests\test_page_js.py       # 页面 JS **真跑**：node --check + 子对话卡片实调用
 ```
 
-**十三条都必须全绿才算通过**（当前 **569 项**）。测试**不需要联网、不需要 API Key**；
+**十三条都必须全绿才算通过**（当前 **576 项**）。测试**不需要联网、不需要 API Key**；
 `test_archive.py` / `test_cards.py` 在数据源或 Anki 不可用时会自动跳过对应段落（不算失败）。
 
 ### 测试不许动你的真实数据
