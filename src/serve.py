@@ -315,7 +315,11 @@ def ask_once(library_root: str, payload: dict) -> dict:
     try:
         study.append_ladder(library_root, lesson, page, question, text,
                             stalls=stalls, gave_answer=gave, tid=tid,
-                            stall=is_stall(question))
+                            stall=is_stall(question),
+                            # ★ 把「框里读出来的原文」也存进账本 ——
+                            #   它是事后出卡时最有价值的语境（你当时到底在看哪一块），
+                            #   以前只活在这一次请求里，关掉就没了。
+                            sel=selection)
     except Exception:  # noqa: BLE001 - 记账失败不该让追问本身失败
         traceback.print_exc()
     return {"ok": True, "text": text, "stalls": stalls, "tid": tid,

@@ -38,6 +38,95 @@ def card_id(sha1: str, page: int, no: int, thread_idx: int | None = None) -> str
     return base if thread_idx is None else f"{base}:t{thread_idx}"
 
 
+def thread_card_id(sha: str, page: int, tid: str, turn: int = 1) -> str:
+    """从**一段对话**出的卡：`<源哈希前12>:p<页>:th<对话编号短哈希>:t<轮次>`。
+
+    为什么不用"页内第几段"这种序号：**对话是可以删的**（用户明确要的功能）。
+    按序号排的话，删掉第 1 段，第 2 段的身份就挪成了原来第 1 段 ——
+    卡片 id 没变、内容却换人了，同步到 Anki 就是把一张旧卡悄悄改成别的知识。
+    对话编号（tid）是稳定的（由框坐标或会话生成），谁被删都不影响别人，
+    所以这里对 tid 取短哈希当身份。
+    """
+    import hashlib
+    h = hashlib.sha1(str(tid or "").encode("utf-8")).hexdigest()[:8]
+    return f"{sha[:12]}:p{page:03d}:th{h}:t{turn}"
+
+
+#: 「别问了直接讲」这类**命令**（不是问题）。它们出现的那一轮往往正是 AI
+#: 终于给出完整讲解的一轮 —— 所以不能因为"它算卡壳"就把这一轮丢掉，
+#: 而是**把题面换成这段对话开头那一问**（那才是你真正想问的）。
+_GIVE_UP_WORDS = ("直接讲", "别问了", "给答案", "告诉我吧", "别绕")
+
+
+def _front_question(ask: str, opening: str) -> str:
+    """这一轮的题面：能用自己那句就用，是"命令"或太短就退回**开头那一问**。"""
+    q = (ask or "").strip()
+    if len(q) >= 4 and not any(w in q for w in _GIVE_UP_WORDS):
+        return q
+    o = (opening or "").strip()
+    return o if len(o) >= 4 else ""
+
+
+#: 从对话出卡的闸门：**AI 必须真的讲了**。
+#: 为什么要有这道闸门：阶梯追问里大多数轮次 AI 只是在**反问**
+#: （「你先说说膜的主要成分是什么？」），把反问当答案做成卡，就是垃圾卡 ——
+#: 这个项目已经因为垃圾卡返工过一次（见 build_cards 的 docstring）。
+def thread_turn_cardable(turn: dict, opening: str = "") -> tuple[bool, str]:
+    a = (turn.get("a") or "").strip()
+    front = _front_question(turn.get("q") or "", opening)
+    if not turn.get("gave_answer"):
+        return False, "那一轮 AI 只是在反问你，没有给出讲解 —— 做成卡背面会是空的"
+    if not front:
+        return False, "没有可用的题面（你那句太短/是命令，这段对话开头也没问到东西）"
+    if len(a) < 30:
+        return False, "AI 那轮的回答太短，撑不起卡背"
+    return True, ""
+
+
+def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
+                             sha: str, threads: list[dict]) -> tuple[list[dict], list[dict]]:
+    """**一段段子对话** → 卡片。**本函数不联网、不调模型**。
+
+    只在「AI 真的给了讲解」的那一轮出卡（见 `thread_turn_cardable`），
+    正面 = 你当时的问题（+ 框里读出来的原文当语境），背面 = AI 的讲解 + 出处。
+    出处里带**对话编号**，以后能回到网页上那段对话继续问。
+    """
+    out: list[dict] = []
+    skipped: list[dict] = []
+    deck = f"课程::{course}"
+
+    for th in threads:
+        page = int(th.get("page") or 0)
+        tid = str(th.get("tid") or "")
+        if not (page and tid):
+            continue
+        source = {"lecture": lesson_label, "file": source_file, "page": page,
+                  "bbox": ""}
+        opening = str(th.get("title") or "")
+        for i, t in enumerate(th.get("turns") or [], start=1):
+            ok, why = thread_turn_cardable(t, opening)
+            if not ok:
+                skipped.append({"page": page, "no": i, "lecture": lesson_label,
+                                "reason": f"对话 `{tid}` 第 {i} 轮：{why}"})
+                continue
+            # 题面：这一轮那句，若它是「别问了直接讲」这类命令 → 退回开头那一问
+            front_q = _front_question(t.get("q") or "", opening)
+            # 框里读出来的原文当语境（有就用，没有就纯问题 —— 不硬凑）
+            ctx = (t.get("sel") or "").strip()
+            out.append({
+                "id": thread_card_id(sha, page, tid, i),
+                "deck": deck,
+                "fields": {
+                    "Front": render_front(ctx, front_q),
+                    "Back": render_back(t.get("a") or "", "", source),
+                },
+                "tags": ["course-pipeline", course, lesson_label, f"p{page}", "对话"],
+                "source": {**source, "kind": "thread", "tid": tid, "turn": i},
+                "crop": None,
+            })
+    return out, skipped
+
+
 def _esc(s: str) -> str:
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 

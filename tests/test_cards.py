@@ -436,6 +436,95 @@ if ac.available():
 else:
     PASSES.append("（跳过 Anki 实时检查：AnkiConnect 未运行）")
 
+# ---------------------------------------------------------------- 9 从「对话」出卡
+#
+# 用户要的「一键出卡」。闸门是**关键**：阶梯追问里大多数轮次 AI 只是在**反问你**
+# （「你先说说膜的主要成分是什么？」）—— 把反问当答案做成卡，背面就是空的，
+# 正是这个项目返工过一次的**垃圾卡**。
+
+TH = {"tid": "m27-11_22_33_44", "page": 27, "n": 2,
+      "title": "脂筏为什么能当信号转导平台？",
+      "turns": [
+          {"q": "脂筏为什么能当信号转导平台？", "a": "你框那段里，脂筏富含的是哪两类成分？",
+           "gave_answer": False, "stall": False, "sel": ""},
+          {"q": "别问了直接讲", "a": "脂筏富含胆固醇和鞘脂，它们在膜上排得更紧，"
+           "把信号分子浓缩在一起，所以转导效率高。", "gave_answer": True,
+           "stall": True, "sel": "【框里读出来的内容】\n脂筏富含胆固醇与鞘脂。"},
+      ]}
+
+made, skipped = C.build_cards_from_threads("生物", "生物:第3章:第3章:survey",
+                                           "x.pptx", "a" * 64, [TH])
+check("★ 从对话出卡：只收 AI 真的给了讲解的那一轮",
+      len(made) == 1 and len(skipped) == 1, f"{len(made)} 张 / {len(skipped)} 跳")
+check("  被跳过的正是「AI 只是反问」的那一轮（不是漏了）",
+      "没有给出讲解" in skipped[0]["reason"], skipped[0]["reason"])
+check("★★ 题面用**这段对话开头那一问** —— 不是「别问了直接讲」这句命令",
+      "脂筏为什么能当信号转导平台？" in made[0]["fields"]["Front"]
+      and "别问了直接讲" not in made[0]["fields"]["Front"],
+      made[0]["fields"]["Front"][:120])
+check("★ 卡背 = AI 的讲解 + 出处（第 N 页）",
+      "胆固醇和鞘脂" in made[0]["fields"]["Back"]
+      and "第 27 页" in made[0]["fields"]["Back"], made[0]["fields"]["Back"][:120])
+check("★ 框里读出来的原文当语境（有就用 —— 你当时到底在看哪一块）",
+      "脂筏富含胆固醇与鞘脂" in made[0]["fields"]["Front"],
+      made[0]["fields"]["Front"][:120])
+check("  卡上标了来源是「对话」，并记下对话编号与轮次（以后回得去）",
+      made[0]["source"]["kind"] == "thread" and made[0]["source"]["tid"] == TH["tid"]
+      and made[0]["source"]["turn"] == 2)
+check("  标签里带「对话」+ 课程 + 讲次 + 页",
+      "对话" in made[0]["tags"] and "生物" in made[0]["tags"]
+      and "p27" in made[0]["tags"], str(made[0]["tags"]))
+
+# ---- 身份：**删掉别的对话不能改到我的身份**（用户要"删对话"，这是前提）----
+id_a = C.thread_card_id("a" * 64, 27, "m27-1", 1)
+check("★ 对话卡身份只由 (源, 页, 对话编号, 轮次) 决定",
+      id_a == C.thread_card_id("a" * 64, 27, "m27-1", 1)
+      and id_a != C.thread_card_id("a" * 64, 27, "m27-2", 1)
+      and id_a != C.thread_card_id("a" * 64, 28, "m27-1", 1)
+      and id_a != C.thread_card_id("a" * 64, 27, "m27-1", 2))
+two = [TH, dict(TH, tid="m40-9_9_9_9", page=40)]
+first_run, _ = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64, two)
+survivor_before = [c["id"] for c in first_run if c["source"]["tid"] == "m40-9_9_9_9"]
+second_run, _ = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64,
+                                           [two[1]])       # 删掉第一段
+check("★★ 删掉前一段对话后，后一段的卡片**身份不变**（否则会悄悄改写旧卡）",
+      survivor_before == [c["id"] for c in second_run], str(survivor_before))
+check("  对话编号再长/再怪也不会把身份弄脏（短哈希 + 段数固定）",
+      len(C.thread_card_id("a" * 64, 27,
+                           "生物:第3章:第3章:survey:p27", 1).split(":")) == 4,
+      C.thread_card_id("a" * 64, 27, "生物:第3章:第3章:survey:p27", 1))
+
+# ---- 闸门细则 ----
+def _turn(**kw):
+    base = {"q": "磷脂为什么能横向移动？", "a": "磷脂横向移动不用换层，" * 4,
+            "gave_answer": True, "stall": False}
+    base.update(kw)
+    return base
+
+
+check("★ 说出「别问了直接讲」那一轮**照样出卡**（那一轮正是 AI 给讲解的一轮）",
+      C.thread_turn_cardable(_turn(q="别问了直接讲", stall=True),
+                             "磷脂为什么能横向移动？")[0])
+check("  但题面会换成开头那一问，不是那句命令",
+      C._front_question("别问了直接讲", "磷脂为什么能横向移动？")
+      == "磷脂为什么能横向移动？")
+check("  开头也没问到东西时，宁可不出卡（没有可用的题面）",
+      C._front_question("别问了直接讲", "不知道") == ""
+      and not C.thread_turn_cardable(_turn(q="不知道"), "不知道")[0])
+check("  AI 只是在反问的那一轮不出卡（背面会是空的）",
+      not C.thread_turn_cardable(_turn(gave_answer=False))[0])
+check("  太短的问题 + 没有开头问 → 不出卡",
+      not C.thread_turn_cardable(_turn(q="嗯"), "")[0])
+check("  AI 回答太短的不出卡（撑不起卡背）",
+      not C.thread_turn_cardable(_turn(a="对。"))[0])
+check("  合格的一轮出卡，且不给理由（空理由 = 没被挡）",
+      C.thread_turn_cardable(_turn())[0] and C.thread_turn_cardable(_turn())[1] == "")
+
+# ---- 重跑幂等：同一段对话跑两遍 → 同样的 id（merge 才去得了重）----
+again, _ = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64, [TH])
+check("★ 重跑同样的对话 → 同样的卡片身份（重跑不会重复制卡）",
+      [c["id"] for c in again] == [c["id"] for c in made])
+
 # ---------------------------------------------------------------- 汇总
 
 for p in PASSES:

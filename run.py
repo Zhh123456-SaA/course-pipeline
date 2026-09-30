@@ -370,13 +370,53 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
         all_cards += made
         all_skipped += skipped
 
+    # ---- 「我和 AI 的对话」也出卡（用户要的「一键出卡」）----
+    # 闸门在 cards.thread_turn_cardable：只有 **AI 真的讲了** 的那一轮才出卡。
+    # 阶梯追问里大多数轮次 AI 只是在反问你 —— 把反问当答案做成卡就是垃圾卡。
+    n_th_cards = 0
+    n_th_seen = 0
+    n_turn_seen = 0
+    th_skip_reasons: list[str] = []
+    for lesson in study.lessons_of(root):
+        stem = study.stem_of(lesson)
+        src = sources["sources"].get(stem)
+        if not src:
+            continue
+        threads = study.threads_of(root, lesson)
+        if not threads:
+            continue
+        made, skipped = cards_mod.build_cards_from_threads(
+            course, lesson, src.get("file", ""), src.get("sha256", ""), threads)
+        all_cards += made
+        all_skipped += skipped
+        n_th_cards += len(made)
+        n_th_seen += len(threads)
+        n_turn_seen += sum(len(t.get("turns") or []) for t in threads)
+        th_skip_reasons += [s["reason"] for s in skipped]
+    if n_th_cards:
+        report.append(f"[card ] 从「我和 AI 的对话」出了 {n_th_cards} 张"
+                      f"（只收 AI 真的给了讲解的那几轮）")
+    elif n_th_seen:
+        # 别让"点了出卡什么都没发生"变成黑箱：说清楚为什么，以及**怎么让它出卡**。
+        report.append(f"[card ] 看了 {n_th_seen} 段对话 / {n_turn_seen} 轮，暂时出 0 张 ——"
+                      f"这些轮里 AI 都只是在反问你，没有给出讲解，"
+                      f"做成卡背面会是空的（那就是垃圾卡）。")
+        report.append("[tip  ] 想让某一段变成卡：在那段对话里说一句「别问了直接讲」，"
+                      "那一轮 AI 会给你完整讲解 —— 下次跑 cards 它就成卡了。")
+        for r in th_skip_reasons[:3]:
+            report.append(f"[skip ] {r}")
+
     if not all_cards:
         msg = ["[warn] 没有可制卡的追问 —— 先跑 archive（需账本里有匹配到讲次的批注）"]
         for s in all_skipped:
             msg.append(f"[skip ] {s['lecture']} 第 {s['page']} 页：{s['reason']}")
         return msg
 
-    data, report = cards_mod.merge_cards(root, all_cards)
+    # ★ 这里**不能**写成 `data, report = ...` —— 那样会把上面攒的 report 整条丢掉。
+    #   实测踩到：出卡这里的 `[card ]/[tip ]` 提示、以及"AI 出题不可用"的警告
+    #   全都不见了（用户看到的是一句都没有，出 0 张卡却不知道为什么）。
+    data, rep_merge = cards_mod.merge_cards(root, all_cards)
+    report += rep_merge
     cards_mod.save_cards(root, data)
 
     # 剔除「按当前规则不该存在」的卡 —— **必须显式 --prune**。

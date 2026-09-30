@@ -268,7 +268,7 @@ def _now() -> str:
 
 def append_ladder(library_root: str, lesson: str, page: int, question: str,
                   answer: str, stalls: int = 0, gave_answer: bool = False,
-                  tid: str = "", stall: bool = False) -> None:
+                  tid: str = "", stall: bool = False, sel: str = "") -> None:
     """把**一轮追问的来回**记进账本。
 
     用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」——
@@ -296,7 +296,8 @@ def append_ladder(library_root: str, lesson: str, page: int, question: str,
     lst.append({"p": int(page or 0), "tid": (tid or "").strip(),
                 "q": question.strip(), "a": (answer or "").strip(),
                 "stalls": int(stalls or 0), "gave_answer": bool(gave_answer),
-                "stall": bool(stall), "at": _now()})
+                "stall": bool(stall), "sel": (sel or "").strip()[:2000],
+                "at": _now()})
     save_study(library_root, data)
 
 
@@ -370,6 +371,7 @@ def threads_of(root: str, lesson: str = "") -> list[dict]:
         turns = [{"q": x.get("q") or "", "a": x.get("a") or "",
                   "at": x.get("at") or "", "stalls": x.get("stalls") or 0,
                   "stall": bool(x.get("stall")),
+                  "sel": x.get("sel") or "",
                   "gave_answer": bool(x.get("gave_answer"))} for x in g]
         out.append({
             "tid": key[1], "lesson": first.get("lesson") or "",
