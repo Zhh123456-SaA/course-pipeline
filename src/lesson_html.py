@@ -992,7 +992,7 @@ _SURVEY_JS = """
     box.innerHTML = "";
 
     if (!ths.length){
-      box.innerHTML = '<div class="hint">还没有对话。在左边课件上**拖一个框**，'
+      box.innerHTML = '<div class="hint">还没有对话。在左边课件上<b>拖一个框</b>，'
         + '拖完直接打字问就行 —— 问过的每一段来回都会收成一段对话，'
         + '以后能点开重读、也能接着往下问。</div>';
       return;
