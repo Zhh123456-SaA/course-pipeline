@@ -475,6 +475,17 @@ class Handler(BaseHTTPRequestHandler):
                     else self.library_root
                 return self._json({"ok": True,
                                    "ladder": study.ladder_of(root2, lesson2)})
+            # 账本里的**框**（课件标记）—— 页面打开时读回来画上。
+            # 评审结论 A2：以前框只存在浏览器 localStorage，换浏览器/清缓存就全没了，
+            # 而右边的对话还在（对话在账本里）→「对话在，但不知道当时框的是哪儿」。
+            if path == "/api/marks":
+                q = urllib.parse.parse_qs(parsed.query)
+                course4 = (q.get("course") or [self.course or ""])[0]
+                lesson4 = (q.get("lesson") or [""])[0]
+                root4 = os.path.join(self.library_root, course4) if course4 \
+                    else self.library_root
+                return self._json({"ok": True,
+                                   "marks": study.marks_of(root4, lesson4)})
             # 子对话：用户原话「我希望制作成**子对话**的形式……可以之后再调出来读」。
             # 同一段对话的来回拼回一起，连标题（第一个问题）和轮数一起给出去。
             if path == "/api/threads":
@@ -532,11 +543,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "msg": f"{type(exc).__name__}: {exc}"}, 500)
 
 
+class _Server(ThreadingHTTPServer):
+    """**不许两个服务抢同一个端口。**
+
+    实测踩到（评审时发现的运行事故）：Windows 上 `SO_REUSEADDR` 允许
+    **多个进程同时 LISTEN 同一个端口**，于是"重启一下服务"根本没生效 ——
+    端口上同时挂着 3 个进程，请求随机落到老进程上，我改的代码不出现，
+    页面还是旧样子（当时以为是代码没生效，查了半天）。
+    这里关掉 reuse（Windows 上 TIME_WAIT 本来也不挡重新 bind），
+    第二次启动会**明确报错**，而不是悄悄退化成"两个服务各答各的"。
+    """
+    allow_reuse_address = False
+    daemon_threads = True
+
+
 def serve(library_root: str, course: str = "", host: str = "127.0.0.1",
           port: int = 8021, open_browser: bool = False) -> None:
     Handler.library_root = os.path.abspath(library_root)
     Handler.course = course
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    try:
+        httpd = _Server((host, port), Handler)
+    except OSError as e:
+        raise SystemExit(
+            f"端口 {port} 已经有一个服务在跑了（{e}）。\n"
+            f"  · 想关掉它：把那个开着「学习库服务」的黑窗口关掉，或重启电脑；\n"
+            f"  · 或者换个端口：python run.py serve --port 8022\n"
+            f"（**不能**两个一起跑：请求会随机落到老的那个上，你会以为"
+            f"「改了没生效」。）") from e
     url = f"http://{host}:{port}/"
     print(f"学习库服务已启动：{url}")
     print(f"  库目录：{Handler.library_root}")

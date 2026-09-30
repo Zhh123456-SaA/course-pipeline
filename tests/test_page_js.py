@@ -118,7 +118,8 @@ def grab(js: str, name: str) -> str:
 
 
 _svjs = next(b for b in blocks if "function threadCard" in b)
-parts = [grab(_svjs, n) for n in ("esc", "threadCard", "toggleThread", "resumeThread")]
+parts = [grab(_svjs, n) for n in ("esc", "threadCard", "toggleThread",
+                                  "resumeThread", "rectOfTid")]
 harness = """
 // ---- 最小 DOM 桩：只够这几个函数用 ----
 var __els = {};
@@ -179,6 +180,12 @@ out.tab = global.__tab;
 out.firstKid = flow.children[0].textContent;
 out.lastKid = flow.children[flow.children.length - 1].textContent;
 
+// 框坐标藏在对话编号里（「回到这一页」靠它跳到那个框）
+out.rectBox = rectOfTid("m27-12_34_56_78");
+out.rectFull = rectOfTid("m40-0_0_100_100");
+out.rectLegacy = rectOfTid("@p27");
+out.rectJunk = rectOfTid("t27-abc");
+
 console.log(JSON.stringify(out));
 """
 hp = os.path.join(tmp, "harness.js")
@@ -228,6 +235,14 @@ if got:
           f"{got.get('tab')} / {str(got.get('firstKid'))[:60]}")
     check("  面板里最后一句是那段对话的末尾（不是空面板）",
           "缩小一点" in (got.get("lastKid") or ""), str(got.get("lastKid"))[:80])
+    # ★ 真跑一遍：对话编号 → 框坐标（「回到这一页」靠它闪那个框）
+    check("★★ 对话编号能还原成框坐标（`m<页>-<x>_<y>_<宽>_<高>`）",
+          got.get("rectBox") == [12, 34, 56, 78]
+          and got.get("rectFull") == [0, 0, 100, 100],
+          f"{got.get('rectBox')} / {got.get('rectFull')}")
+    check("  老对话编号（`@p27`）与杂号解析不出来 → 退回只跳页，不炸",
+          got.get("rectLegacy") is None and got.get("rectJunk") is None,
+          f"{got.get('rectLegacy')} / {got.get('rectJunk')}")
 
 shutil.rmtree(tmp, ignore_errors=True)
 

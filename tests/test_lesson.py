@@ -279,8 +279,23 @@ check("★ 框还在课件上：编号 + 悬停看 AI 回话 + 🗑 删除",
       and 'className = "del"' in h_sv)
 check("★ 点框本身就能重新选中它（清单没了，框自己当把手）",
       't.closest(".mk")' in h_sv and 'mkb.dataset.mkidx !== undefined' in h_sv)
-check("★ 没有对话时给一句人话的提示（不是空白页签）",
+check("  没有对话时给一句人话的提示（不是空白页签）",
       "还没有对话" in h_sv and "拖一个框" in h_sv)
+# ★ 评审结论 A2：框的真相源必须统一到账本 —— 否则换浏览器/清缓存，
+#   课件上的框全没了、右边的对话还在（你会看到"对话在，但不知道当时框的是哪儿"），
+#   而且「回到这一页」只能跳到页、跳不到框。
+check("★★ 打开页面就把账本里的框读回来（账本 = 框的真相源）",
+      "/api/marks?course=" in h_sv and "function loadMarks(" in h_sv
+      and "loadMarks(); loadLadder();" in h_sv)
+check("★ 读回来时按「页+矩形」去重（本地已有的不重复画）",
+      "function markKey(" in h_sv and "have[markKey(m)]" in h_sv)
+check("★ 「回到这一页」要跳到**那个框**并闪一下，不是只跳页",
+      'go.dataset.goframe' in h_sv and "function focusRect(" in h_sv
+      and ".mk.flash" in h_sv and "el.classList.add(\"flash\")" in h_sv)
+check("★ 框坐标藏在对话编号里（回得去当时的那个框）",
+      "function rectOfTid(" in h_sv and "m(\\d+)-(\\d+)_(\\d+)_(\\d+)_(\\d+)" in h_sv)
+check("  老对话编号（`@p27` 这种）解析不出来就退回只跳页，不炸",
+      "if (!focusRect(pg, rectOfTid(tid))) focusRect(pg, null);" in h_sv)
 check("★ 从账本补 AI 回话时**不覆盖**已有的（免得把你刚看到的刷掉）",
       "!all[i].a && x.a" in h_sv)
 

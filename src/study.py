@@ -404,6 +404,50 @@ def ladder_of(root: str, lesson: str = "") -> list[dict]:
     return out
 
 
+def marks_of(root: str, lesson: str = "") -> list[dict]:
+    """取出账本里的**课件标记（框）**。给了 lesson 就只取那一节，否则全取。
+
+    为什么要有这个函数（评审结论 A2）：框以前有**两份真相**——
+    页面上那份在浏览器 localStorage 里，账本里也存了一份（`/api/mark` 写进来的），
+    而页面**只写不读**。后果：
+      ① 换浏览器 / 清缓存 → 课件上的框全没了，右边的对话还在（对话在账本里）
+         —— 你会看到"对话在，但不知道当时框的是哪儿"；
+      ② 对话卡片上的「回到这一页」只能跳到页，**跳不到那个框**。
+    这里把账本那份读出来，让页面在打开时把框画回去（框的真相源 = 账本）。
+    """
+    out: list[dict] = []
+    idx: dict = {}
+    for r in _study_roots(root):
+        data = load_study(r)
+        for k, v in (data.get("lessons") or {}).items():
+            if lesson and k != lesson:
+                continue
+            for m in v.get("marks") or []:
+                if not isinstance(m, dict):
+                    continue
+                rect = m.get("r") or []
+                try:
+                    key = (int(m.get("p") or 0),
+                           tuple(round(float(x), 1) for x in rect[:4]))
+                except (TypeError, ValueError):
+                    continue
+                old = idx.get(key)
+                if old is None:
+                    one = dict(m, lesson=k)
+                    idx[key] = one
+                    out.append(one)
+                    continue
+                # 同一处框被记过两次（实测有：一次没问、一次问了）——
+                # **合并**，别把问题丢掉（按 rect 去重时"没问"那条会先到）
+                for f in ("q", "a", "t"):
+                    if not old.get(f) and m.get(f):
+                        old[f] = m[f]
+                if not old.get("lesson"):
+                    old["lesson"] = k
+    out.sort(key=lambda x: (x.get("p") or 0, (x.get("t") or "")))
+    return out
+
+
 def marks_by_page(library_root: str) -> dict[int, dict]:
     """跨全部小节汇总「每页被标记了几处、其中几条是提问」。
 

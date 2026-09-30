@@ -273,6 +273,43 @@ try:
 finally:
     V.engine.chat, V.engine.available, V.engine.strip_think = _chat, _avail, _strip
 
+# ---------------------------------------------------------------- 4b4 框的真相源
+# 评审结论 A2：框以前有**两份真相**（页面 localStorage + 账本），而页面**只写不读**。
+# 后果①换浏览器/清缓存，课件上的框全没了、右边的对话还在；
+# 后果②对话卡片的「回到这一页」只能跳到页、跳不到那个框。
+# 这条链子（/api/mark 写 → marks_of 读回来 → 页面画回去）以前从没被测过。
+BOX = {"p": 27, "r": [12.0, 34.0, 56.0, 78.0], "q": "我当时框的这一块"}
+V.record("/api/mark", "mark", {"lesson": LES, "at": "t9", "mark": BOX}, LIB)
+ms = S.marks_of(LIB, LES)
+check("★ 账本里的框能读回来（页面打开时据此把框画回去）",
+      any(m.get("p") == 27 and m.get("r") == [12.0, 34.0, 56.0, 78.0] for m in ms),
+      json.dumps(ms, ensure_ascii=False)[:200])
+check("  带上它属于哪一节（跨节汇总时才知道是谁的）",
+      all(m.get("lesson") == LES for m in ms))
+V.record("/api/mark", "mark", {"lesson": LES, "at": "t10", "mark": dict(BOX)}, LIB)
+check("  同一处框重复写只算一个（按 页+矩形 去重）",
+      len([m for m in S.marks_of(LIB, LES)
+           if m.get("r") == [12.0, 34.0, 56.0, 78.0]]) == 1)
+# 实测有这种情况：同一处框记过两次，一次没问、一次问了 ——
+# 按矩形去重时"没问"那条会先到，**问题必须保住**，否则框画回来是哑的
+DUMB = {"p": 30, "r": [1.0, 1.0, 2.0, 2.0]}
+V.record("/api/mark", "mark", {"lesson": LES, "at": "t10b", "mark": dict(DUMB)}, LIB)
+V.record("/api/mark", "mark",
+         {"lesson": LES, "at": "t10c",
+          "mark": {"p": 30, "r": [1.0, 1.0, 2.0, 2.0], "q": "这个框里的图是什么意思"}},
+         LIB)
+merged = [m for m in S.marks_of(LIB, LES) if m.get("p") == 30]
+check("★ 同一处框的两条记录合并，**问题不丢**（画回来才不是哑框）",
+      len(merged) == 1 and merged[0].get("q") == "这个框里的图是什么意思",
+      json.dumps(merged, ensure_ascii=False))
+V.record("/api/mark", "mark",
+         {"lesson": "课A:讲:节:x", "at": "t11",
+          "mark": {"p": 3, "r": [1.0, 2.0, 3.0, 4.0], "q": "库根那门课的框"}},
+         os.path.join(ROOT2, "课A"))
+check("  传库根也能读（与 ladder_of 共用同一套根解析）",
+      len(S.marks_of(ROOT2)) >= 1, str(S.marks_of(ROOT2))[:120])
+check("  没有账本的目录 → 空表，不炸", S.marks_of(os.path.join(ROOT, "没这门课")) == [])
+
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 
 KCSDIR = os.path.join(ROOT, "库K")

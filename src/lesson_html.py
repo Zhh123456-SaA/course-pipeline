@@ -802,6 +802,11 @@ figure.pg.tome figcaption{background:#2f6f4e}
   border-radius:3px;cursor:pointer}
 .mk.q{border-color:#7fc9a0;background:rgba(127,201,160,.22)}
 .mk.sel{outline:2px solid #fff}
+/* 「回到这一页」时闪一下那个框 —— 不然跳到页也不知道当时框的是哪儿 */
+.mk.flash{outline:3px solid #7fc9a0;box-shadow:0 0 0 6px rgba(127,201,160,.28);
+  animation:mkflash .5s ease-in-out 2}
+@keyframes mkflash{0%,100%{box-shadow:0 0 0 6px rgba(127,201,160,.28)}
+  50%{box-shadow:0 0 0 14px rgba(127,201,160,.05)}}
 .mk .qbtn{position:absolute;right:-2px;bottom:-2px;transform:translateY(100%);
   font-size:11px;padding:1px 6px;background:#2f6f4e;border-color:#2f6f4e;color:#fff;
   border-radius:0 0 6px 6px;line-height:1.4}
@@ -1045,7 +1050,7 @@ _SURVEY_JS = """
     var bar = document.createElement("div");
     bar.className = "tbar";
     var go = document.createElement("button");
-    go.className = "mini"; go.dataset.gopage = String(th.page || 1);
+    go.className = "mini"; go.dataset.goframe = th.tid;
     go.textContent = "回到这一页";
     var re = document.createElement("button");
     re.className = "mini"; re.dataset.resume = th.tid;
@@ -1178,6 +1183,17 @@ _SURVEY_JS = """
     if (thd && thd.dataset.tid !== undefined){ toggleThread(thd.dataset.tid); return; }
     var rsm = t.closest && t.closest("[data-resume]");
     if (rsm){ resumeThread(rsm.dataset.resume); return; }
+    // 「回到这一页」：跳过去**并闪一下当时的那个框**
+    // （框的坐标就藏在对话编号里：`m<页>-<x>_<y>_<宽>_<高>`）
+    var gf = t.closest && t.closest("[data-goframe]");
+    if (gf){
+      var tid = gf.dataset.goframe || "";
+      var th = null;
+      (window.__threads || []).forEach(function(x){ if (x.tid === tid) th = x; });
+      var pg = (th && th.page) || 1;
+      if (!focusRect(pg, rectOfTid(tid))) focusRect(pg, null);
+      return;
+    }
     if (t.id === "thall"){
       var ths2 = window.__threads || [];
       var wantAll = !window.__allOpen;
@@ -1280,10 +1296,73 @@ _SURVEY_JS = """
     toast("已导出到下载目录");
   }
 
+  // ---- 把账本里的框读回来 --------------------------------------------------
+  // ★ 评审结论 A2：框以前有**两份真相** —— 页面那份在浏览器 localStorage 里，
+  //   账本里也有一份（`/api/mark` 写进去的），而页面**只写不读**。后果：
+  //   换浏览器/清缓存 → 课件上的框全没了、右边的对话还在（对话在账本里），
+  //   你会看到"对话在，但不知道当时框的是哪儿"；对话卡片上的「回到这一页」
+  //   也只能跳到页、跳不到框。现在：**账本 = 框的真相源**，打开页面就画回来。
+  function markKey(m){
+    var r = (m && m.r) || [];
+    return [m && m.p, Math.round((r[0]||0)*10), Math.round((r[1]||0)*10),
+            Math.round((r[2]||0)*10), Math.round((r[3]||0)*10)].join("|");
+  }
+  function loadMarks(){
+    var L = document.body.dataset.lesson || "";
+    if (!SRV.on || !L) return;
+    fetch("/api/marks?course=" + encodeURIComponent(window.__COURSE__ || "")
+          + "&lesson=" + encodeURIComponent(L), { cache: "no-store" })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        var rows = (j && j.marks) || [];
+        if (!rows.length) return;
+        var have = {};
+        marks().forEach(function(m){ have[markKey(m)] = true; });
+        var added = 0;
+        rows.forEach(function(m){
+          if (!m || !m.p || !(m.r && m.r.length >= 4)) return;
+          if (have[markKey(m)]) return;
+          marks().push({ p: m.p, r: m.r, q: m.q || "", t: m.t || "",
+                         a: m.a || "" });
+          have[markKey(m)] = true; added++;
+        });
+        if (added){ save(); render(); toast("从账本读回了 " + added + " 个框"); }
+      })
+      .catch(function(){});
+  }
+  window.__reloadMarks = loadMarks;
+
+  // 跳到某个框并**闪一下**（对话卡片的「回到这一页」用）
+  function focusRect(pg, r){
+    var f = figOf(pg);
+    if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
+    if (!r || r.length < 4) return false;
+    var want = markKey({ p: pg, r: r });
+    var all = marks(), hit = -1;
+    for (var i = 0; i < all.length; i++){
+      if (markKey(all[i]) === want){ hit = i; break; }
+    }
+    if (hit < 0) return false;
+    activeMark = hit; updateCtx();
+    setTimeout(function(){
+      var el = stage.querySelector('.mk[data-mkidx="' + hit + '"]');
+      if (!el) return;
+      el.classList.add("flash");
+      setTimeout(function(){ el.classList.remove("flash"); }, 1400);
+    }, 260);
+    return true;
+  }
+
+  // 从对话编号里还原出"当时的那个框"（`m<页>-<x>_<y>_<宽>_<高>`）
+  function rectOfTid(tid){
+    var m = /^m(\\d+)-(\\d+)_(\\d+)_(\\d+)_(\\d+)$/.exec(String(tid || ""));
+    if (!m) return null;
+    return [parseInt(m[2],10), parseInt(m[3],10), parseInt(m[4],10), parseInt(m[5],10)];
+  }
   // ---- 从账本把追问历史读回来 ------------------------------------------
   // 用户原话：「那我在哪里查看我和 ai 的交互和反问呢」。
-  // 两件事各归各位：`/api/ladder` 用来给**框**补 AI 回话（悬停能看），
-  // `/api/threads` 用来摆「我的对话」那栏。
+  // 三件事各归各位：`/api/marks` 把**框**画回来（真相源 = 账本），
+  // `/api/ladder` 给框补 AI 回话（悬停能看），`/api/threads` 摆「我的对话」那栏。
   // 只在本地没有 AI 回话时补上（本地有就不覆盖，免得把你刚看到的刷掉）。
   function loadLadder(){
     var L = document.body.dataset.lesson || "";
@@ -1431,7 +1510,8 @@ _SURVEY_JS = """
     //   否则你一问就没有坐标，服务端读不到框里内容。
     if (marks().length) activeMark = marks().length - 1;
     updateCtx();
-    srvPing(function(){ if (SRV.on){ toast("已连上服务：标记会直接进账本"); loadLadder(); } });
+    srvPing(function(){ if (SRV.on){ toast("已连上服务：标记会直接进账本");
+    loadMarks(); loadLadder(); } });
     var m = /^#p(\\d+)$/.exec(location.hash || "");
     if (m){
       var f = figOf(parseInt(m[1], 10));
