@@ -157,6 +157,19 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
     outline_by_lecture = {c.get("id"): (c.get("outline") or {})
                           for c in kcs_data.get("chapters", [])}
 
+    # 你在这套页面上和 AI 的对话（子对话）—— 按讲次分好，逐页挂进笔记。
+    # 用户原话：「我希望制作成子对话的形式……可以之后再调出来读」；
+    # 评审结论：对话在这之前**没有任何出口**（Obsidian 里一个字都没有）。
+    th_by_stem: dict[str, list[dict]] = {}
+    for lesson in study.lessons_of(root):
+        stem = study.stem_of(lesson)
+        if stem not in sources["sources"]:
+            continue
+        got = study.threads_of(root, lesson)
+        if got:
+            th_by_stem.setdefault(stem, []).extend(got)
+    n_threads = sum(len(v) for v in th_by_stem.values())
+
     for stem in sorted(sources["sources"]):
         data = led.load_pages(stem)
         if data is None:
@@ -169,10 +182,12 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
             ann_by_page.setdefault(int(a.get("page", 0)), []).append(a)
 
         lec_kcs = kcs_by_lecture.get(stem) or []
+        th_page = render.render_threads_by_page(th_by_stem.get(stem, []))
         body = render.render_lecture_body(course, data, include_images=images,
                                           annotations_by_page=ann_by_page,
                                           kcs=lec_kcs,
-                                          outline=outline_by_lecture.get(stem))
+                                          outline=outline_by_lecture.get(stem),
+                                          threads_by_page=th_page)
         note_name = f"{stem}.md"
         title = stem
         if data.get("running_head"):
@@ -186,7 +201,9 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         })
         ann_note = f"，含归档追问 {sum(len(v) for v in ann_by_page.values())} 条" if ann_by_page else ""
         kc_note = f"，{len(lec_kcs)} 个知识点" if lec_kcs else ""
-        report.append(f"[note] {note_name}  {data['page_count']} 页{ann_note}{kc_note}")
+        th_note = f"，含我和 AI 的对话 {sum(len(v) for v in th_page.values())} 段" if th_page else ""
+        report.append(f"[note] {note_name}  {data['page_count']} 页"
+                      f"{ann_note}{kc_note}{th_note}")
 
     render.write_note(
         os.path.join(notes_dir, "_课程索引.md"),
@@ -194,6 +211,19 @@ def cmd_render(course: str, images: bool = True) -> list[str]:
         render.render_index_body(course, index_items),
     )
     report.append(f"[note] _课程索引.md  {len(index_items)} 讲")
+
+    # 「我和 AI 的对话」总表：给对话一个**能反复翻的**出口
+    # （讲次笔记里也按页挂了一份；这一页是全集 + 双链回各页，方便从图谱翻回来）
+    if n_threads:
+        stem_note = {stem: stem for stem in sources["sources"]}   # 双链不带 .md
+        render.write_note(
+            os.path.join(notes_dir, "_我和AI的对话.md"),
+            f"{course} · 我和 AI 的对话",
+            render.render_threads_page(course, th_by_stem, stem_note),
+            tail=render.TH_HANDWRITTEN,
+        )
+        n_turn = sum(len(t.get("turns") or []) for v in th_by_stem.values() for t in v)
+        report.append(f"[note] _我和AI的对话.md  {n_threads} 段对话 / {n_turn} 轮")
 
     # 知识点总览（只在真有骨架时才写）
     chapters = [c for c in kcs_data.get("chapters", []) if c.get("kcs")]

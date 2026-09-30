@@ -433,18 +433,21 @@ def render_overview_body(course: str, chapters: list[dict]) -> str:
 def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
                         annotations_by_page: dict[int, list[dict]] | None = None,
                         kcs: list[dict] | None = None,
-                        outline: dict | None = None) -> str:
+                        outline: dict | None = None,
+                        threads_by_page: dict[int, list[dict]] | None = None) -> str:
     """渲染一篇讲义笔记的「生成块」内容。
 
     `annotations_by_page`：来自 ppt-deepreader 的框选追问（归档通道搬进来的）。
     `kcs`：从这一讲提炼出来的知识点（S2），按页挂到对应页面下面。
+    `threads_by_page`：**你在这套页面上和 AI 的对话**（子对话），同样按页挂。
 
-    每页的顺序固定为：**讲义原文 → 知识点 → AI 追问记录 → 我的手写批注位**。
+    每页的顺序固定为：**讲义原文 → 知识点 → AI 追问记录 → 我和 AI 的对话 → 我的手写批注位**。
     """
     import archive as _archive   # 延迟导入，避免模块级循环依赖
     import kcs as _kcs
 
     ann_by_page = annotations_by_page or {}
+    th_by_page = threads_by_page or {}
     kc_list = kcs or []
     out: list[str] = []
     head = lecture.get("running_head") or ""
@@ -459,6 +462,12 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
         pages = "、".join(str(k) for k in sorted(ann_by_page))
         out.append(">")
         out.append(f"> 含 **{n_ann}** 条来自逐页精读器的追问记录（第 {pages} 页）")
+    n_th = sum(len(v) for v in th_by_page.values())
+    if n_th:
+        pages = "、".join(str(k) for k in sorted(th_by_page))
+        out.append(">")
+        out.append(f"> 含 **{n_th}** 段你和 AI 的对话（第 {pages} 页）"
+                   f" —— 详见 [[_我和AI的对话]]")
     if lecture.get("boilerplate"):
         shown = "、".join(lecture["boilerplate"][:4])
         out.append(f">")
@@ -504,12 +513,113 @@ def render_lecture_body(course: str, lecture: dict, include_images: bool = True,
             out.append("")
             out.append(_archive.render_annotation_md(a, slug))
 
+        # 🗣️ 你在这套页面上和 AI 的对话 —— 就挂在**你当时看的那一页**下面。
+        # 为什么不另起一个文件就完事：读笔记复习时，你是在"这一页讲了什么"
+        # 的语境里，旁边的困惑和解答必须同时在场，否则又要来回跳。
+        for i, th in enumerate(th_by_page.get(no, []), 1):
+            out.append("")
+            out.append(render_thread_md(th, i))
+
         out.append("")
         # 每页紧跟一个批注位 —— 批注必须在被批注内容的旁边
         out.append(annotation_block(no))
         out.append("")
         out.append("---")
         out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------- 我和 AI 的对话
+#
+# 为什么要把对话搬进笔记（用户原话：「我希望制作成子对话的形式……可以之后再
+# 调出来读」+ 评审结论「对话没有出口」）：
+# 你花时间最多、含金量最高的东西，是**你自己问过的问题**和 AI 给你的讲解 ——
+# 它以前只活在账本 JSON 和一个网页里：Obsidian 里一个字都没有，Anki 也拿不到。
+# 所以这里给它一个出口：按页挂进讲次笔记（就在你当时看的那一页下面）。
+
+#: 单独一页的对话总表附带的「你的地盘」
+TH_HANDWRITTEN = """## 我的补充
+
+> 这一节是你的地盘 —— 程序重跑只替换上面的生成块，这里一个字都不动。
+> 建议写：**我当时为什么会这么问**、**后来是怎么想通的**、**还有哪里没通**。
+"""
+
+
+def _md_quote(text: str) -> str:
+    """多行文本 → 引用块。每一行都要带 `>`，否则只有第一行落在块里。"""
+    lines = str(text or "").strip().splitlines() or [""]
+    return "\n".join(("> " + ln) if ln.strip() else ">" for ln in lines)
+
+
+def render_thread_md(th: dict, idx: int = 1) -> str:
+    """一段子对话 → 笔记里的一块 markdown（讲次笔记与对话总表共用）。"""
+    turns = th.get("turns") or []
+    at, at_end = th.get("at") or "", th.get("at_end") or ""
+    when = at + (f" → {at_end[11:]}" if at_end and at_end != at else "")
+    meta = [f"{th.get('n') or len(turns)} 轮", when,
+            f"对话编号 `{th.get('tid') or '?'}`"]
+    if th.get("gave_answer"):
+        meta.append("**其中给了完整讲解**")
+    out = [f"#### 🗣️ 我和 AI 的对话 #{idx}", ""]
+    out.append("> " + " ｜ ".join(x for x in meta if x))
+    if th.get("title"):
+        out.append(f"> 开头那一问：**{th['title']}**")
+    for t in turns:
+        q, a = (t.get("q") or "").strip(), (t.get("a") or "").strip()
+        out.append("")
+        if q:
+            out.append(f"**🙋 我问**：{q}")
+            out.append("")
+        if a:
+            out.append(_md_quote("🤖 **AI**：" + a))
+    return "\n".join(out)
+
+
+def render_threads_by_page(threads: list[dict]) -> dict[int, list[dict]]:
+    """按页号分组（同一页多段按时间先后排）。"""
+    out: dict[int, list[dict]] = {}
+    for th in threads:
+        try:
+            p = int(th.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        if p > 0:
+            out.setdefault(p, []).append(th)
+    for v in out.values():
+        v.sort(key=lambda x: (x.get("at") or ""))
+    return out
+
+
+def render_threads_page(course: str, by_stem: dict[str, list[dict]],
+                        stem_note: dict[str, str] | None = None) -> str:
+    """全课程的「我和 AI 的对话」总表。
+
+    `by_stem`：讲次 → 该讲的对话（页号已在每段里）。
+    `stem_note`：讲次 → 笔记文件名（用来做 `[[笔记#第 N 页]]` 双链）。
+    """
+    n_th = sum(len(v) for v in by_stem.values())
+    n_turn = sum(len(t.get("turns") or []) for v in by_stem.values() for t in v)
+    out = [f"> 共 **{n_th}** 段对话、**{n_turn}** 轮来回 —— 全是**你自己问过的问题**"
+           f"和 AI 当时的回答。", ">",
+           "> 程序生成，重跑会更新；你自己的补充写在这一节最下面。", ""]
+    if not n_th:
+        out.append("（还没有对话。在课件页上拖框提问，回来重跑这一页就有了。）")
+        return "\n".join(out).rstrip() + "\n"
+
+    for stem in sorted(by_stem):
+        threads = by_stem[stem]
+        if not threads:
+            continue
+        out.append(f"## 📂 {stem}")
+        out.append("")
+        note = (stem_note or {}).get(stem) or stem
+        by_page = render_threads_by_page(threads)
+        for page in sorted(by_page):
+            out.append(f"### 第 {page} 页 · [[{note}#第 {page} 页]]")
+            out.append("")
+            for i, th in enumerate(by_page[page], 1):
+                out.append(render_thread_md(th, i))
+                out.append("")
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -545,11 +655,13 @@ def merge_gen_block(existing: str | None, title: str, body: str, tail: str | Non
     return MARKER_RE.sub(lambda _m: block, existing, count=1)
 
 
-def write_note(path: str, title: str, body: str) -> str:
+def write_note(path: str, title: str, body: str, tail: str | None = None) -> str:
     """读旧文件 → 抠出批注 → 合并 → 原子写。返回最终内容（便于测试）。
 
     批注的保管链条：**旧文件是批注的家**。先把它抠出来，等新内容生成好，
     再按页号塞回去。这样即使整篇重渲染，你写的字也不会丢。
+
+    `tail`：新建文件时写在第 3 节的「你的地盘」（默认是讲次笔记的《我的笔记》）。
     """
     existing = None
     if os.path.exists(path):
@@ -558,6 +670,6 @@ def write_note(path: str, title: str, body: str) -> str:
 
     annotations = extract_annotations(existing) if existing else {}
     body_with_annot = apply_annotations(body, annotations)
-    merged = merge_gen_block(existing, title, body_with_annot)
+    merged = merge_gen_block(existing, title, body_with_annot, tail=tail)
     atomic_write_text(path, merged)
     return merged

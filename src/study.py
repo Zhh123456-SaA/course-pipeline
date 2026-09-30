@@ -300,6 +300,46 @@ def append_ladder(library_root: str, lesson: str, page: int, question: str,
     save_study(library_root, data)
 
 
+def _study_roots(root: str) -> list[str]:
+    """把 `root` 解析成"真有 study 账本的那些目录"。
+
+    `root` 既可以是**课程目录**（含 `.ledger/`），也可以是**库根目录** ——
+    后者会把每门课都扫一遍。为什么要兼容：实测踩到一次"读回来是空的"——
+    服务端在没传 course 时把库根当成了课程目录，于是去找
+    `D:\\学习库\\.ledger\\study.json`（不存在），而账本其实在
+    `D:\\学习库\\<课>\\.ledger\\study.json`。
+    """
+    if os.path.isfile(study_ledger_path(root)):
+        return [root]
+    out: list[str] = []
+    if os.path.isdir(root):
+        for c in sorted(os.listdir(root)):
+            d = os.path.join(root, c)
+            if os.path.isdir(d) and os.path.isfile(study_ledger_path(d)):
+                out.append(d)
+    return out
+
+
+def lessons_of(root: str) -> list[str]:
+    """账本里记过内容的**节 id**（课程目录或库根都行）。"""
+    out: list[str] = []
+    for r in _study_roots(root):
+        out.extend((load_study(r).get("lessons") or {}).keys())
+    return sorted(set(out))
+
+
+def stem_of(lesson: str) -> str:
+    """从 lesson id 里抠出**源文件 stem**（讲次笔记的文件名就是它）。
+
+    lesson id 的形状：`<课程>:<stem>:<部分>:<课型>`；
+    「过课件」那种整份的没有"部分"那一段，是 `<课程>:<stem>:<stem>:survey`。
+    这里只取第 2 段 —— 调用处会拿它去 `sources` 里核对，**对不上就跳过**，
+    所以猜错的代价只是"那段对话没出现在笔记里"，不会写错地方。
+    """
+    parts = (lesson or "").split(":")
+    return parts[1] if len(parts) >= 2 else ""
+
+
 def threads_of(root: str, lesson: str = "") -> list[dict]:
     """把追问来回**按子对话拼回去**，最新的排最前。
 
@@ -348,22 +388,10 @@ def ladder_of(root: str, lesson: str = "") -> list[dict]:
     """取出追问来回（给了 lesson 就只取那一节）。
 
     `root` 既可以是**课程目录**（含 `.ledger/`），也可以是**库根目录** ——
-    后者会把每门课都扫一遍。为什么要兼容：实测踩到一次"读回来是空的"——
-    服务端在没传 course 时把库根当成了课程目录，于是去找
-    `D:\\学习库\\.ledger\\study.json`（不存在），而账本其实在
-    `D:\\学习库\\<课>\\.ledger\\study.json`。
+    后者会把每门课都扫一遍（见 `_study_roots`）。
     """
-    roots: list[str] = []
-    if os.path.isfile(study_ledger_path(root)):
-        roots.append(root)
-    elif os.path.isdir(root):
-        for c in sorted(os.listdir(root)):
-            d = os.path.join(root, c)
-            if os.path.isdir(d) and os.path.isfile(study_ledger_path(d)):
-                roots.append(d)
-
     out: list[dict] = []
-    for r in roots:
+    for r in _study_roots(root):
         data = load_study(r)
         for k, v in (data.get("lessons") or {}).items():
             if lesson and k != lesson:
