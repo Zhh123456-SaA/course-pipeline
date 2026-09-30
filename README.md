@@ -28,6 +28,7 @@
 | **S4** | **Anki 卡片**：把追问变成带出处的卡片，一键推进 Anki | ✅ 完成 |
 | **S2** | **知识点骨架**：讲义页 + 你的追问 → 可自测的知识点 | ✅ 完成 |
 | **S5** | **问题化 + 知识点图谱**（自测问题 / 原子笔记 / 双链 / 使用指南） | ✅ 完成 |
+| **S5.5** | **过课件 + 阶梯追问 + 子对话**（一页页看原件、拖框标记、框上提问；默认只反问不给答案；每段对话收成一张可再打开的卡片） | ✅ 完成 |
 | S6 | 学习循环 + 今日学习清单 | ⬜ |
 | S7 | 视频那一半（抽帧 + 字幕段落 ↔ 画面配对） | ⬜ |
 
@@ -263,9 +264,12 @@ python tests\test_archive_prune.py # 归档清理：串门脏数据能清、没�
 python tests\test_cards.py         # 卡片身份稳定 + 不重复推送 + 中英字段映射 + AI 出题闸门
 python tests\test_kcs.py           # 知识点骨架：schema 复用 + id 稳定 + 闸门 + 追问挂载
 python tests\test_office.py        # PPTX/DOCX 摄取：分派 + 页图落盘 + 归档按课程隔离
+python tests\test_serve.py         # 本地服务：接口 + 裁图读框 + 子对话（账本拼回一段对话）
+python tests\test_lesson.py        # HTML 课：不截断 + 多课型 + 页图路径
+python tests\test_page_js.py       # 页面 JS **真跑**：node --check + 子对话卡片实调用
 ```
 
-**十条都必须全绿才算通过**（当前 **398 项**）。测试**不需要联网、不需要 API Key**；
+**十三条都必须全绿才算通过**（当前 **569 项**）。测试**不需要联网、不需要 API Key**；
 `test_archive.py` / `test_cards.py` 在数据源或 Anki 不可用时会自动跳过对应段落（不算失败）。
 
 ### 测试不许动你的真实数据

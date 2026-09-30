@@ -283,12 +283,28 @@ check("★ 刷新后恢复 activeMark（否则一问就没坐标 → AI 看不�
 check("★ 点标记条 = 选中那个框（可手动重新指定）",
       "activeMark = parseInt(t.dataset.mkidx, 10)" in h_sv)
 check("★ 以前的对话从账本读回来（关页面/换浏览器都还在）",
-      "window.__hist = rows" in h_sv and "以前的对话" in h_sv)
-check("★ 账本里的历史即使本地框没了也会列出",
-      "rest.slice().reverse()" in h_sv)
-check("  历史条也带「我问」链接 + AI 回话 + 给过完整讲解标记",
-      'q2.textContent = "我问："' in h_sv and 'a2.textContent = "AI："' in h_sv
-      and "x.gave_answer" in h_sv)
+      "window.__hist = rows" in h_sv and "我的对话" in h_sv)
+# ★ 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」——
+#   平铺一串「我问/AI」是流水账；按段收成卡片，点开才展开整段来回。
+check("★ 子对话：从 /api/threads 取分好段的对话",
+      "/api/threads?lesson=" in h_sv and "window.__threads" in h_sv)
+check("★ 子对话卡片：标题（第一问）+ 轮数 + 展开后的完整来回",
+      "function threadCard(" in h_sv and "th.n + \" 轮 · \"" in h_sv
+      and 'q.className = "tq"' in h_sv and 'a.className = "ta"' in h_sv)
+check("★ 子对话能展开/收起，且状态在重渲染后不还原",
+      "function toggleThread(" in h_sv and "window.__openTids" in h_sv)
+check("★ 「接着问」：把老对话摆回面板 + 光标进输入框（接着这段聊）",
+      "function resumeThread(" in h_sv and "window.__resumeTid = tid" in h_sv
+      and "showTab(\"ai\")" in h_sv)
+check("★ 「接着问」的分支必须排在 gopage 前面（否则永远点不到）",
+      h_sv.index("closest(\"[data-resume]\")") < h_sv.index("t.dataset.gopage !== undefined"))
+check("★ 每段对话有自己的编号：同一个框 = 同一段（跨刷新也不变）",
+      'tid = "m" + (mk.p || 0)' in h_sv and "tid: tid," in h_sv)
+check("★ 面板里回一句 = 接着这一段说（不是另起一段）",
+      "tid: window.__curTid || \"\"" in h_sv)
+check("  卡片里带「我问 / AI」标注 + 给过完整讲解的标记",
+      '\'<span class="who">我问</span>\'' in h_sv
+      and '" · 给了完整讲解"' in h_sv)
 
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))

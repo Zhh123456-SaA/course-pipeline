@@ -108,8 +108,10 @@ def build_ask_prompt(page_text: str, selection: str, question: str,
             f"请给出你这一轮要说的话。")
 
 
-#: 会话状态（追问的来回），只活在内存里 —— 服务重启就清空，符合"追问是临时的"语义
-_SESSIONS: dict[str, list[dict]] = {}
+#: 会话状态（追问的来回），只活在内存里 —— 服务重启就清空。
+#: 键是**页面会话**；值是 `{tid, hist}`：tid 一变（点了「接着问」另一段对话），
+#: hist 就从账本重新拼回来，见 `seed_hist`。
+_SESSIONS: dict[str, dict] = {}
 _LOCK = threading.Lock()
 
 
@@ -222,16 +224,47 @@ def read_region(library_root: str, course: str, page: int, rect: list,
         return {"ok": False, "msg": f"{type(e).__name__}: {e}"}
 
 
+def seed_hist(library_root: str, lesson: str, tid: str) -> list[dict]:
+    """从**账本**把一段子对话的来回读回来。
+
+    这是"以后再调出来读 / 接着往下问"的关键：内存里的 `_SESSIONS` 重启就没了，
+    只要 `tid` 还躺在账本里，隔几个月点开同一段对话，AI 照样知道前面聊过什么。
+    """
+    if not tid:
+        return []
+    out: list[dict] = []
+    for th in study.threads_of(library_root, lesson):
+        if (th.get("tid") or "") != tid:
+            continue
+        for t in th.get("turns") or []:
+            q = (t.get("q") or "").strip()
+            if q:
+                out.append({"role": "user", "text": q,
+                            "stall": bool(t.get("stall")) or is_stall(q)})
+            if (t.get("a") or "").strip():
+                out.append({"role": "assistant", "text": t["a"]})
+    return out
+
+
 def ask_once(library_root: str, payload: dict) -> dict:
-    """一次追问。返回 `{ok, text, stalls, gave_answer}`。"""
+    """一次追问。返回 `{ok, text, stalls, gave_answer, tid}`。"""
     sid = str(payload.get("session") or "default")
+    lesson = str(payload.get("lesson") or "")
     selection = str(payload.get("selection") or "")
     question = str(payload.get("question") or "").strip()
     page = int(payload.get("page") or 0)
     page_text = str(payload.get("page_text") or "")
+    # 子对话编号：客户端给（同一个框 = 同一段对话）；没给就按"节+页"兜底，
+    # 这样旧版页面照样能用，只是粒度粗一点。
+    tid = str(payload.get("tid") or "").strip() or f"{sid}:p{page}"
 
     with _LOCK:
-        hist = _SESSIONS.setdefault(sid, [])
+        sess = _SESSIONS.get(sid)
+        # 换了 tid = 换了一段对话（点「接着问」）→ 从账本把那段接回来
+        if sess is None or sess.get("tid") != tid:
+            sess = {"tid": tid, "hist": seed_hist(library_root, lesson, tid)}
+            _SESSIONS[sid] = sess
+        hist = sess["hist"]
 
     # 上一轮 AI 问完，他这轮回了一句 —— 先把这句记进历史并判卡壳
     if hist and hist[-1].get("role") == "assistant" and question:
@@ -280,11 +313,12 @@ def ask_once(library_root: str, payload: dict) -> dict:
     # ★ 记进账本 —— 否则这些反问和你的回答**关掉页面就没了**。
     #   用户原话：「那我在哪里查看我和 ai 的交互和反问呢」
     try:
-        study.append_ladder(library_root, str(payload.get("lesson") or ""),
-                            page, question, text, stalls=stalls, gave_answer=gave)
+        study.append_ladder(library_root, lesson, page, question, text,
+                            stalls=stalls, gave_answer=gave, tid=tid,
+                            stall=is_stall(question))
     except Exception:  # noqa: BLE001 - 记账失败不该让追问本身失败
         traceback.print_exc()
-    return {"ok": True, "text": text, "stalls": stalls,
+    return {"ok": True, "text": text, "stalls": stalls, "tid": tid,
             "gave_answer": bool(gave), "turn": len(hist)}
 
 
@@ -437,6 +471,16 @@ class Handler(BaseHTTPRequestHandler):
                     else self.library_root
                 return self._json({"ok": True,
                                    "ladder": study.ladder_of(root2, lesson2)})
+            # 子对话：用户原话「我希望制作成**子对话**的形式……可以之后再调出来读」。
+            # 同一段对话的来回拼回一起，连标题（第一个问题）和轮数一起给出去。
+            if path == "/api/threads":
+                q = urllib.parse.parse_qs(parsed.query)
+                course3 = (q.get("course") or [self.course or ""])[0]
+                lesson3 = (q.get("lesson") or [""])[0]
+                root3 = os.path.join(self.library_root, course3) if course3 \
+                    else self.library_root
+                return self._json({"ok": True,
+                                   "threads": study.threads_of(root3, lesson3)})
             # ★ 用 `/c/<课>/…` **镜像课程目录结构**，页面里的相对路径才成立。
             #   实测事故：原来页面在 `/lessons/<课>/x.html`、图是 `../assets/…`，
             #   浏览器解析成 `/lessons/assets/…`，而路由是 `/assets/<课>/…` ——

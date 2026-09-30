@@ -673,6 +673,30 @@ _NET_JS = """
     var q = (question || "").trim();
     if (!q) return;
     if (ctx.first === undefined) ctx.first = q;
+    // ★ 这段对话属于哪一段（子对话编号）？
+    //   用户原话：「我希望制作成**子对话**的形式……可以之后再调出来读」。
+    //   ① 点了「接着问」→ 就用指定的那一段；② 调用方给了 → 用它；
+    //   ③ 框了某个框 → 那个框就是一段对话（以后问同一个框，还是接在这一段上）；
+    //   ④ 都没有 → 新开一段。
+    var tid = window.__resumeTid || ctx.tid || "";
+    if (!tid && mk && mk.r && mk.r.length >= 4){
+      tid = "m" + (mk.p || 0) + "-" + Math.round(mk.r[0]) + "_"
+            + Math.round(mk.r[1]) + "_" + Math.round(mk.r[2]) + "_"
+            + Math.round(mk.r[3]);
+    }
+    if (!tid && window.__curTid && window.__curSid === ctx.session) tid = window.__curTid;
+    if (!tid) tid = "t" + (ctx.page || 0) + "-" + Date.now().toString(36);
+    window.__resumeTid = ""; window.__resumeTitle = "";
+    window.__curTid = tid; window.__curSid = ctx.session;
+    // 换了一段对话 → 把面板清空重开（前面那段账本里还在，侧栏随时能翻回来）
+    if (flow.dataset.tid !== tid){
+      flow.innerHTML = "";
+      flow.dataset.tid = tid;
+      var fh = document.createElement("div");
+      fh.className = "turn ctx";
+      fh.textContent = "第 " + (ctx.page || "?") + " 页 · 这一段对话";
+      flow.appendChild(fh);
+    }
     var tag = "";
     if (mk){
       var all = (typeof marks === "function") ? marks() : [];
@@ -695,7 +719,8 @@ _NET_JS = """
       lesson: document.body.dataset.lesson || "",
       page: ctx.page, selection: ctx.selection || "",
       rect: ctx.rect || null,                     // ★ 框的坐标 —— 服务端靠它裁图给视觉模型
-      question: q, page_text: ctx.pageText || ""
+      question: q, page_text: ctx.pageText || "",
+      tid: tid,                                   // ★ 子对话编号 —— 服务端按它记账
     }, function(j){
       wait.textContent = j && j.ok ? j.text : ("（没能问到："
         + ((j && j.msg) || "未知错误") + "）");
@@ -712,7 +737,12 @@ _NET_JS = """
         flow.appendChild(d);
       }
       flow.scrollTop = flow.scrollHeight;
-      // 追问完刷新下面「我问过 AI 的」那一块（它从账本读的）
+      // 这一段对话冒出来了 —— 默认展开，方便马上翻回去读
+      if (j && j.ok && j.tid){
+        window.__curTid = j.tid;
+        (window.__openTids = window.__openTids || {})[j.tid] = true;
+      }
+      // 追问完刷新下面「我的对话」那一块（它从账本读的）
       if (window.__reloadLadder) window.__reloadLadder();
     });
   }
@@ -812,6 +842,30 @@ figure.pg.tome figcaption{background:#2f6f4e}
 .myq{display:block;color:#7fc9a0;text-decoration:underline;margin-top:4px;
   text-decoration-style:dotted;cursor:pointer}
 .myq:hover{color:#b8e0c8}
+
+/* ---- 子对话卡片（「我的对话」那段）---- */
+.histhead button.mini{float:right;margin-left:8px}
+button.mini{font-size:12px;padding:2px 9px;border-radius:6px}
+.thread{border:1px solid #2c3036;border-radius:9px;margin:7px 0;overflow:hidden;
+  background:#1c1f24}
+.thread.on{border-color:#2f6f4e}
+.thread .thead{display:flex;gap:7px;align-items:baseline;padding:8px 10px;
+  cursor:pointer;font-size:13px;line-height:1.5}
+.thread .thead:hover{background:#232830}
+.thread .thead .caret{color:#7fc9a0;flex:0 0 auto}
+.thread .thead .p{color:#9aa0a6;white-space:nowrap;font-size:12px;
+  font-variant-numeric:tabular-nums;flex:0 0 auto}
+.thread .thead .tt{color:#dfe4ea;overflow:hidden;text-overflow:ellipsis;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.thread .tmeta{padding:0 10px 8px 27px;font-size:11px;color:#7c8288}
+.thread .tbody{display:none;padding:0 10px 10px 10px}
+.thread.on .tbody{display:block}
+.thread .tq,.thread .ta{margin:6px 0;padding:7px 10px;border-radius:9px;font-size:13px;
+  line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.thread .tq{background:#243026;color:#b8e0c8;margin-left:18px}
+.thread .ta{background:#232830;color:#dfe4ea;margin-right:6px}
+.thread .who{display:block;font-size:11px;color:#7c8288;margin-bottom:2px}
+.thread .tbar{display:flex;gap:8px;margin-top:8px}
 .aia{margin-top:5px;padding:6px 9px;background:#232830;border-radius:8px;color:#c7cdd4;
   font-size:12px;line-height:1.6;white-space:pre-wrap;max-height:150px;overflow:auto}
 .mkitem:hover{background:#232830}
@@ -986,36 +1040,109 @@ _SURVEY_JS = """
       box.appendChild(row);
     });
 
-    // ★ 用户原话：「我希望能看到**以前**和 ai 的对话，用作复习」。
-    //   账本里一直存着（`lesson.ladder`），所以就算本地框没了 / 换了浏览器，
-    //   历史也该看得到。这里把**没有对应本地框**的那些补在下面。
-    var hist = window.__hist || [];
-    var rest = hist.filter(function(x){
-      return !all.some(function(m){ return m.p === x.p && m.q === x.q; });
-    });
-    if (rest.length){
-      var h = document.createElement("div");
-      h.className = "histhead";
-      h.textContent = "以前的对话（" + rest.length + " 条，从账本读的）";
-      box.appendChild(h);
-      rest.slice().reverse().forEach(function(x){
-        var r2 = document.createElement("div");
-        r2.className = "mkitem";
-        r2.dataset.gopage = String(x.p || 1);
-        var hd = document.createElement("div");
-        hd.className = "mkh";
-        hd.innerHTML = '<span class="p">第 ' + (x.p || "?") + " 页</span>"
-          + '<span class="hint">' + (x.at || "") + "</span>"
-          + (x.gave_answer ? ' <span class="badge">给了完整讲解</span>' : "");
-        var q2 = document.createElement("a");
-        q2.className = "myq"; q2.dataset.gopage = String(x.p || 1);
-        q2.textContent = "我问：" + (x.q || "");
-        var a2 = document.createElement("div");
-        a2.className = "aia"; a2.textContent = "AI：" + (x.a || "");
-        r2.appendChild(hd); r2.appendChild(q2); r2.appendChild(a2);
-        box.appendChild(r2);
-      });
+    // ★ 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」。
+    //   以前这里是平铺的一串「我问 / AI」，读起来像流水账。
+    //   现在按**一段一段的对话**收起来：标题 = 这段的第一问，点一下就展开
+    //   从头读到尾；还能「回到这一页」和「接着问」（接着问会把老的来回
+    //   喂回给 AI，所以几个月后它照样知道你们聊过什么）。
+    var ths = window.__threads || [];
+    if (ths.length){
+      var th0 = document.createElement("div");
+      th0.className = "histhead";
+      var hb = document.createElement("button");
+      hb.id = "thall"; hb.className = "mini";
+      hb.textContent = (window.__allOpen ? "全部收起" : "全部展开");
+      th0.textContent = "我的对话（" + ths.length + " 段）";
+      th0.appendChild(hb);
+      box.appendChild(th0);
+      var op = window.__openTids || {};
+      ths.forEach(function(th){ box.appendChild(threadCard(th, !!op[th.tid])); });
     }
+  }
+
+  // 一段子对话 = 一张卡片：标题（第一问）+ 几轮 + 展开后的完整来回
+  function threadCard(th, open){
+    var d = document.createElement("div");
+    d.className = "thread" + (open ? " on" : "");
+    d.dataset.th = th.tid;
+    var h = document.createElement("div");
+    h.className = "thead"; h.dataset.tid = th.tid;
+    h.innerHTML = '<span class="caret">' + (open ? "▾" : "▸") + "</span>"
+      + '<span class="p">第 ' + (th.page || "?") + " 页</span>"
+      + '<span class="tt">' + esc(th.title || "（没写问题）") + "</span>";
+    var meta = document.createElement("div");
+    meta.className = "tmeta";
+    meta.textContent = th.n + " 轮 · " + (th.at_end || th.at || "")
+      + (th.gave_answer ? " · 给了完整讲解" : "");
+    var body = document.createElement("div");
+    body.className = "tbody";
+    (th.turns || []).forEach(function(x){
+      var q = document.createElement("div");
+      q.className = "tq";
+      q.innerHTML = '<span class="who">我问</span>' + esc(x.q || "");
+      body.appendChild(q);
+      if (x.a){
+        var a = document.createElement("div");
+        a.className = "ta";
+        a.innerHTML = '<span class="who">AI</span>' + esc(x.a);
+        body.appendChild(a);
+      }
+    });
+    var bar = document.createElement("div");
+    bar.className = "tbar";
+    var go = document.createElement("button");
+    go.className = "mini"; go.dataset.gopage = String(th.page || 1);
+    go.textContent = "回到这一页";
+    var re = document.createElement("button");
+    re.className = "mini"; re.dataset.resume = th.tid;
+    re.textContent = "接着问";
+    bar.appendChild(go); bar.appendChild(re);
+    body.appendChild(bar);
+    d.appendChild(h); d.appendChild(meta); d.appendChild(body);
+    return d;
+  }
+
+  // 展开 / 收起一段对话（记住状态，重新渲染后不还原）
+  function toggleThread(tid){
+    var op = window.__openTids = window.__openTids || {};
+    op[tid] = !op[tid];
+    if (window.__redraw) window.__redraw();
+  }
+
+  // 「接着问」：把这段老对话**摆回面板**，光标进输入框，接着往下说
+  function resumeThread(tid){
+    var th = null;
+    (window.__threads || []).forEach(function(x){ if (x.tid === tid) th = x; });
+    if (!th){ toast("没找到这段对话"); return; }
+    var flow = document.getElementById("ladderflow");
+    if (flow){
+      flow.innerHTML = "";
+      flow.dataset.tid = tid;
+      var fh = document.createElement("div");
+      fh.className = "turn ctx";
+      fh.textContent = "这是第 " + (th.page || "?") + " 页的那段对话（"
+        + th.n + " 轮，从账本读回来的）—— 接着往下说就行。";
+      flow.appendChild(fh);
+      (th.turns || []).forEach(function(x){
+        var q = document.createElement("div");
+        q.className = "turn me"; q.textContent = x.q || "";
+        flow.appendChild(q);
+        if (x.a){
+          var a = document.createElement("div");
+          a.className = "turn ai"; a.textContent = x.a;
+          flow.appendChild(a);
+        }
+      });
+      flow.scrollTop = flow.scrollHeight;
+    }
+    window.__curTid = tid; window.__resumeTid = tid;
+    window.__curSid = (document.body.dataset.lesson || "") + ":p" + (th.page || 1);
+    var op = window.__openTids = window.__openTids || {};
+    op[tid] = true;
+    showTab("ai");
+    var qb = document.getElementById("qbox");
+    if (qb){ qb.focus(); }
+    toast("接着这段问 —— 前面的来回 AI 还记得");
   }
 
   // ---- 拖框 ----
@@ -1090,6 +1217,21 @@ _SURVEY_JS = """
 
   document.addEventListener("click", function(e){
     var t = e.target;
+    // ★ 子对话卡片：点标题展开/收起；点「接着问」把老对话摆回来继续聊。
+    //   这两个分支必须**排在** `dataset.gopage` 前面 —— 卡片里的按钮
+    //   也带 gopage，顺序反了就会被当成"只是跳页"，永远点不到「接着问」。
+    var thd = t.closest && t.closest(".thead");
+    if (thd && thd.dataset.tid !== undefined){ toggleThread(thd.dataset.tid); return; }
+    var rsm = t.closest && t.closest("[data-resume]");
+    if (rsm){ resumeThread(rsm.dataset.resume); return; }
+    if (t.id === "thall"){
+      var ths2 = window.__threads || [];
+      var wantAll = !window.__allOpen;
+      var op2 = window.__openTids = {};
+      ths2.forEach(function(x){ op2[x.tid] = wantAll; });
+      window.__allOpen = wantAll;
+      render(); return;
+    }
     if (t.dataset && t.dataset.askmk !== undefined){
       var r = t.closest(".mk").getBoundingClientRect();
       showEditor(parseInt(t.dataset.askmk, 10), r.left, r.bottom + 8); return;
@@ -1122,7 +1264,7 @@ _SURVEY_JS = """
       ladderAsk({ session: (document.body.dataset.lesson||"") + ":p" + pg.p,
                   page: pg.p, selection: "", rect: pg.r || null,
                   pageText: (PAGES[pg.p-1] || {}).t || "" },
-                document.getElementById("editor"), v);
+                document.getElementById("editor"), v, pg);
       return;
     }
     if (t.id === "lsend"){
@@ -1131,6 +1273,7 @@ _SURVEY_JS = """
       var pg2 = (marks()[editorFor] || {}).p || curPage;
       ladderAsk({ session: (document.body.dataset.lesson||"") + ":p" + pg2,
                   page: pg2, selection: "",
+                  tid: window.__curTid || "",     // 面板里回一句 = 接着这一段说
                   pageText: (PAGES[pg2-1] || {}).t || "" },
                 document.getElementById("editor"), q);
       return;
@@ -1201,6 +1344,15 @@ _SURVEY_JS = """
           }
         });
         if (dirty) save();
+        if (window.__redraw) window.__redraw();
+      })
+      .catch(function(){});
+    // ★ 子对话（分好段的）。分开取：`/api/ladder` 是给"框上有 AI 回话"用的，
+    //   这一段纯给「我的对话」列表用，哪边失败都不影响另一边。
+    fetch("/api/threads?lesson=" + encodeURIComponent(L), { cache: "no-store" })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        window.__threads = (j && j.threads) || [];
         if (window.__redraw) window.__redraw();
       })
       .catch(function(){});

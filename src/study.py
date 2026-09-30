@@ -267,7 +267,8 @@ def _now() -> str:
 
 
 def append_ladder(library_root: str, lesson: str, page: int, question: str,
-                  answer: str, stalls: int = 0, gave_answer: bool = False) -> None:
+                  answer: str, stalls: int = 0, gave_answer: bool = False,
+                  tid: str = "", stall: bool = False) -> None:
     """把**一轮追问的来回**记进账本。
 
     用户原话：「那我在**哪里查看**我和 ai 的交互和反问呢」——
@@ -275,7 +276,11 @@ def append_ladder(library_root: str, lesson: str, page: int, question: str,
     服务端也只存在内存里（重启就没），**一个字都没进账本**。
     那就又变回"读完就忘"了 —— 正是加阶梯要治的病。
 
-    记「他问了什么 + AI 回了什么」，按时间追加；同样的 (页, 问题, 回答) 不重复记。
+    记「他问了什么 + AI 回了什么」，按时间追加；同样的 (页, 对话, 问题, 回答) 不重复记。
+
+    `tid` 是**子对话编号**（用户原话：「我希望制作成**子对话**的形式……可以之后再调出来读」）。
+    光有平铺的来回列表，读起来是一串孤立的问答；带上 tid，同一段对话的
+    来回就能重新拼回去，几个月后点开还能从头读到尾、还能接着往下问。
     """
     lesson = (lesson or "").strip()
     if not lesson or not (question or "").strip():
@@ -283,15 +288,60 @@ def append_ladder(library_root: str, lesson: str, page: int, question: str,
     data = load_study(library_root)
     rec = data.setdefault("lessons", {}).setdefault(lesson, {})
     lst = rec.setdefault("ladder", [])
-    key = (int(page or 0), question.strip(), (answer or "").strip())
+    key = (int(page or 0), (tid or "").strip(), question.strip(),
+           (answer or "").strip())
     for x in lst:
-        if (x.get("p"), x.get("q"), x.get("a")) == key:
+        if (x.get("p"), x.get("tid") or "", x.get("q"), x.get("a")) == key:
             return
-    lst.append({"p": int(page or 0), "q": question.strip(),
-                "a": (answer or "").strip(),
+    lst.append({"p": int(page or 0), "tid": (tid or "").strip(),
+                "q": question.strip(), "a": (answer or "").strip(),
                 "stalls": int(stalls or 0), "gave_answer": bool(gave_answer),
-                "at": _now()})
+                "stall": bool(stall), "at": _now()})
     save_study(library_root, data)
+
+
+def threads_of(root: str, lesson: str = "") -> list[dict]:
+    """把追问来回**按子对话拼回去**，最新的排最前。
+
+    返回的每一段：
+      `{tid, lesson, page, title, n, at, at_end, gave_answer, turns:[{q,a,at,stalls,gave_answer}]}`
+
+    老账本里没有 `tid` 的那几条（功能上线前记的）按**页**归段 ——
+    这不是凑数：老界面的会话键就是 `节:第N页`，一页本来就只有一段对话流。
+    硬要按 tid 拆成一条一段的话，以前 8 轮对话会变成 8 张单轮卡片，
+    比平铺列表还难读。
+    """
+    rows = ladder_of(root, lesson)
+    groups: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    for x in rows:
+        tid = (x.get("tid") or "").strip()
+        key = (x.get("lesson") or "", tid) if tid else \
+              (x.get("lesson") or "", f"@p{x.get('p') or 0}")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(x)
+
+    out: list[dict] = []
+    for key in order:
+        g = sorted(groups[key], key=lambda x: (x.get("at") or "", x.get("p") or 0))
+        first = g[0]
+        turns = [{"q": x.get("q") or "", "a": x.get("a") or "",
+                  "at": x.get("at") or "", "stalls": x.get("stalls") or 0,
+                  "stall": bool(x.get("stall")),
+                  "gave_answer": bool(x.get("gave_answer"))} for x in g]
+        out.append({
+            "tid": key[1], "lesson": first.get("lesson") or "",
+            "page": first.get("p") or 0,
+            "title": (first.get("q") or "").strip(),
+            "n": len(turns), "at": first.get("at") or "",
+            "at_end": g[-1].get("at") or "",
+            "gave_answer": any(t["gave_answer"] for t in turns),
+            "turns": turns})
+    out.sort(key=lambda t: (t["at_end"], t["at"]))
+    out.reverse()
+    return out
 
 
 def ladder_of(root: str, lesson: str = "") -> list[dict]:

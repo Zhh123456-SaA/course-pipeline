@@ -178,6 +178,53 @@ check("  传课程目录也能读到", len(S.ladder_of(os.path.join(ROOT2, "课A
 check("  课程里有 ladder 字段（不是只存在内存）",
       bool(S.load_study(os.path.join(ROOT2, "课A"))["lessons"]["课A:讲:节:x"].get("ladder")))
 
+# ---------------------------------------------------------------- 4b2 子对话
+# 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」。
+# 光有平铺的来回列表，读起来是一串孤立的问答；带上 tid，同一段对话的来回
+# 才能重新拼回去 —— 几个月后点开还能从头读到尾，还能接着往下问。
+V.study.append_ladder(LIB, LES, 27, "那胆固醇在里头干嘛？", "你觉得它凭什么待在膜里？",
+                      tid="m27-11_22_33_44")
+V.study.append_ladder(LIB, LES, 27, "还是不懂", "那我们缩小一点，先看膜的成分。",
+                      stalls=1, tid="m27-11_22_33_44")
+V.study.append_ladder(LIB, LES, 40, "另一段对话", "先说第一个。",
+                      tid="m40-5_6_7_8")
+V.study.append_ladder(LIB, LES, 40, "另一段对话", "先说第一个。", tid="m40-9_9_9_9")
+th = S.threads_of(LIB, LES)
+check("★ 同一段对话的来回拼回一起（不是平铺的流水账）",
+      any(x["tid"] == "m27-11_22_33_44" and x["n"] == 2 for x in th),
+      json.dumps(th, ensure_ascii=False)[:200])
+check("★ 标题 = 这段对话的**第一个问题**",
+      any(x["tid"] == "m27-11_22_33_44"
+          and x["title"] == "那胆固醇在里头干嘛？" for x in th))
+check("  页号、轮数、首末时间都带上了（卡片上要显示）",
+      all(x["page"] and x["n"] and x["at"] and x["at_end"] for x in th))
+check("★ 不同的框 = 不同的子对话（不会串成一段）",
+      len([x for x in th if x["tid"].startswith("m40-")]) == 2)
+check("★ 最新的那段排最前（先看刚聊的）",
+      th[0]["tid"] == "m40-9_9_9_9", th[0]["tid"])
+check("★ tid 不同的同样问答**各记一条**（去重键里必须含 tid）",
+      len([x for x in S.ladder_of(LIB, LES) if x["q"] == "另一段对话"]) == 2)
+# 功能上线前记的老账本没有 tid —— 按**页**归段。这不是凑数：老界面的会话键
+# 就是「节:第N页」，一页本来就只有一段对话流；硬按"一条一段"拆的话，
+# 以前 8 轮对话会变成 8 张单轮卡片，比平铺列表还难读。
+check("★ 老账本（没 tid）按**页**归段（对上老界面「一页一段对话」）",
+      len([x for x in th if x["tid"] == "@p27" and x["n"] == 2]) == 1,
+      str([(x["tid"], x["n"]) for x in th]))
+check("  而且标题仍然是这段的第一问",
+      any(x["tid"] == "@p27" and x["title"] == "脂筏为什么能当信号转导平台？"
+          for x in th))
+
+# 「接着问」靠它：把老对话从账本读回来喂给 AI（内存里的会话重启就没了）
+h = V.seed_hist(LIB, LES, "m27-11_22_33_44")
+check("★ seed_hist 把一段老对话读回来（隔几个月也能接着问）",
+      [x["text"] for x in h] == ["那胆固醇在里头干嘛？", "你觉得它凭什么待在膜里？",
+                                 "还是不懂", "那我们缩小一点，先看膜的成分。"],
+      json.dumps(h, ensure_ascii=False)[:200])
+check("  读回来的来回带着「卡壳」判定（阶梯的计数才不会清零）",
+      any(x.get("stall") for x in h if x["role"] == "user"))
+check("  要是不存在的 tid → 空表，不炸", V.seed_hist(LIB, LES, "根本没这段") == [])
+check("  空 tid → 空表（不去扫整个库）", V.seed_hist(LIB, LES, "") == [])
+
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 
 KCSDIR = os.path.join(ROOT, "库K")
