@@ -272,6 +272,24 @@ check("★ 标记条里直接带 AI 的回话（不用另开一个页签找）",
 check("★ 从账本补 AI 回话时**不覆盖**已有的（免得把你刚看到的刷掉）",
       "!all[i].a && x.a" in h_sv)
 
+# ---- 用户报的两件：以前的对话要能复习 / AI「看不到图」----
+# ★ 「AI 看不到框里的图」的真根因：`sendQ` 把**问题本身**塞进了 `selection`
+#   （那是"框里读出来的内容"的槽位）。视觉那步一旦没跑，AI 收到的"框选内容"
+#   就是他的问题，于是回"你框的是图，我看不到它具体画了啥"。
+check("★ 绝不把「问题」当「框选内容」传（两样必须分开）",
+      "selection: (pm && pm.q)" not in h_sv and 'selection: "",' in h_sv)
+check("★ 刷新后恢复 activeMark（否则一问就没坐标 → AI 看不到图）",
+      "activeMark = marks().length - 1" in h_sv)
+check("★ 点标记条 = 选中那个框（可手动重新指定）",
+      "activeMark = parseInt(t.dataset.mkidx, 10)" in h_sv)
+check("★ 以前的对话从账本读回来（关页面/换浏览器都还在）",
+      "window.__hist = rows" in h_sv and "以前的对话" in h_sv)
+check("★ 账本里的历史即使本地框没了也会列出",
+      "rest.slice().reverse()" in h_sv)
+check("  历史条也带「我问」链接 + AI 回话 + 给过完整讲解标记",
+      'q2.textContent = "我问："' in h_sv and 'a2.textContent = "AI："' in h_sv
+      and "x.gave_answer" in h_sv)
+
 check("survey：没有页图时不炸（退回一个占位页）",
       'data-mode="survey"' in L.build_survey("测试课", ch, []))
 

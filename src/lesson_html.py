@@ -807,6 +807,8 @@ figure.pg.tome figcaption{background:#2f6f4e}
   border-bottom:1px solid #2c3036;cursor:pointer;border-radius:6px}
 .mkh{display:flex;gap:8px;align-items:center;font-size:12px;color:#9aa0a6}
 .mkh .badge{background:#2f6f4e;color:#fff;border-radius:99px;padding:1px 8px;font-size:11px}
+.histhead{margin:12px 0 4px;font-size:12px;color:#9aa0a6;border-top:1px dashed #2c3036;
+  padding-top:10px}
 .myq{display:block;color:#7fc9a0;text-decoration:underline;margin-top:4px;
   text-decoration-style:dotted;cursor:pointer}
 .myq:hover{color:#b8e0c8}
@@ -953,7 +955,8 @@ _SURVEY_JS = """
       if (isQ) n++;
       var row = document.createElement("div");
       row.className = "mkitem";
-      row.dataset.gopage = String(m.p);            // 点整条都能跳回那一页
+      row.dataset.gopage = String(m.p);
+      row.dataset.mkidx = String(i);               // 点整条 = 选中这个框
       var head = document.createElement("div");
       head.className = "mkh";
       head.innerHTML = (isQ ? '<span class="badge">框' + n + "</span>"
@@ -966,6 +969,7 @@ _SURVEY_JS = """
         var q = document.createElement("a");
         q.className = "myq";
         q.dataset.gopage = String(m.p);
+        q.dataset.mkidx = String(i);
         q.textContent = "我问：" + m.q;
         row.appendChild(q);
       } else {
@@ -981,6 +985,37 @@ _SURVEY_JS = """
       }
       box.appendChild(row);
     });
+
+    // ★ 用户原话：「我希望能看到**以前**和 ai 的对话，用作复习」。
+    //   账本里一直存着（`lesson.ladder`），所以就算本地框没了 / 换了浏览器，
+    //   历史也该看得到。这里把**没有对应本地框**的那些补在下面。
+    var hist = window.__hist || [];
+    var rest = hist.filter(function(x){
+      return !all.some(function(m){ return m.p === x.p && m.q === x.q; });
+    });
+    if (rest.length){
+      var h = document.createElement("div");
+      h.className = "histhead";
+      h.textContent = "以前的对话（" + rest.length + " 条，从账本读的）";
+      box.appendChild(h);
+      rest.slice().reverse().forEach(function(x){
+        var r2 = document.createElement("div");
+        r2.className = "mkitem";
+        r2.dataset.gopage = String(x.p || 1);
+        var hd = document.createElement("div");
+        hd.className = "mkh";
+        hd.innerHTML = '<span class="p">第 ' + (x.p || "?") + " 页</span>"
+          + '<span class="hint">' + (x.at || "") + "</span>"
+          + (x.gave_answer ? ' <span class="badge">给了完整讲解</span>' : "");
+        var q2 = document.createElement("a");
+        q2.className = "myq"; q2.dataset.gopage = String(x.p || 1);
+        q2.textContent = "我问：" + (x.q || "");
+        var a2 = document.createElement("div");
+        a2.className = "aia"; a2.textContent = "AI：" + (x.a || "");
+        r2.appendChild(hd); r2.appendChild(q2); r2.appendChild(a2);
+        box.appendChild(r2);
+      });
+    }
   }
 
   // ---- 拖框 ----
@@ -1063,6 +1098,15 @@ _SURVEY_JS = """
       marks().splice(parseInt(t.dataset.delmk, 10), 1); save(); render(); return;
     }
     if (t.dataset && t.dataset.gopage !== undefined){
+      // 点标记条 = **选中那个框**（之后就能问它）+ 跳过去 + 光标进输入框。
+      // 为什么需要：activeMark 只在内存里，刷新后会丢；点一下就能重新指定，
+      // 免得"想问这个框却问成了别的框"（AI 会回"我看不到它具体画了啥"）。
+      if (t.dataset.mkidx !== undefined){
+        activeMark = parseInt(t.dataset.mkidx, 10);
+        updateCtx();
+        var qb3 = document.getElementById("qbox");
+        if (qb3){ showTab("ai"); qb3.focus(); }
+      }
       var f = figOf(parseInt(t.dataset.gopage, 10));
       if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });
       return;
@@ -1147,6 +1191,7 @@ _SURVEY_JS = """
       .then(function(j){
         var rows = (j && j.ladder) || [];
         if (!rows.length) return;
+        window.__hist = rows;                 // 列表据此把历史一并列出来
         var all = marks(), dirty = false;
         rows.forEach(function(x){
           for (var i = 0; i < all.length; i++){
@@ -1155,7 +1200,8 @@ _SURVEY_JS = """
             }
           }
         });
-        if (dirty){ save(); renderList(); if (window.__redraw) window.__redraw(); }
+        if (dirty) save();
+        if (window.__redraw) window.__redraw();
       })
       .catch(function(){});
   }
@@ -1234,8 +1280,11 @@ _SURVEY_JS = """
     var pg = (pm && pm.p) || curPage;
     // ★ ① 把问题写回这个框（框变绿 + 编号 + 悬停能看）
     if (pm && !pm.q){ pm.q = q; save(); render(); }
+    // ★ `selection` 只装**框里读出来的东西**（服务端读出来的），
+    //   绝不塞他问的那句话 —— 实测事故：把问题塞进去，AI 收到的"框选内容"
+    //   就是问题本身，于是它回"你框的是图，我看不到它具体画了啥"。
     ladderAsk({ session: (document.body.dataset.lesson || "") + ":p" + pg,
-                page: pg, selection: (pm && pm.q) || "",
+                page: pg, selection: "",
                 rect: (pm && pm.r) || null,
                 pageText: (PAGES[pg - 1] || {}).t || "" },
               document.getElementById("p-ai"), q, pm);
@@ -1267,6 +1316,10 @@ _SURVEY_JS = """
 
   function start(){
     buildAll(); render(); watchScroll();
+    // ★ 刷新后 activeMark 会丢（它只在内存里）→ 恢复成最后一个框，
+    //   否则你一问就没有坐标，服务端读不到框里内容。
+    if (marks().length) activeMark = marks().length - 1;
+    updateCtx();
     srvPing(function(){ if (SRV.on){ toast("已连上服务：标记会直接进账本"); loadLadder(); } });
     var m = /^#p(\\d+)$/.exec(location.hash || "");
     if (m){
