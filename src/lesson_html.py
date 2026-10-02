@@ -1008,7 +1008,7 @@ _SURVEY_JS = """
 
     // ★ 用户原话：「我希望制作成**子对话**的形式……**可以之后再调出来读**」。
     //   按**一段一段的对话**收起来：标题 = 这段的第一问，点一下就展开
-    //   从头读到尾；还能「回到这一页」和「接着问」（接着问会把老的来回
+    //   从头读到尾；还能「回去接着聊」（跳回那一页 + 把老的来回
     //   喂回给 AI，所以几个月后它照样知道你们聊过什么）。
     var th0 = document.createElement("div");
     th0.className = "histhead";
@@ -1058,18 +1058,19 @@ _SURVEY_JS = """
     });
     var bar = document.createElement("div");
     bar.className = "tbar";
-    var go = document.createElement("button");
-    go.className = "mini"; go.dataset.goframe = th.tid;
-    go.textContent = "回到这一页";
+    // ★ 用户反馈：「『回到这一页』和『接着问』功能重复」—— 对的，它们是同一件事的
+    //   两半（回去 + 接着聊）。合成一个：跳过去、闪一下当时的框、把这段对话摆回
+    //   面板、光标进输入框。顺带修掉一个隐性问题：以前「接着问」不会跳页，
+    //   你在第 80 页点第 27 页那段接着聊，新的一轮会被记到第 80 页上去。
     var re = document.createElement("button");
     re.className = "mini"; re.dataset.resume = th.tid;
-    re.textContent = "接着问";
+    re.textContent = "回去接着聊";
     // 删掉整段（用户：「框是临时的能删，对话是永久的反而不能删，很奇怪」）
     var del = document.createElement("button");
     del.className = "mini danger"; del.dataset.delTh = th.tid;
     del.dataset.delPage = String(th.page || 0);
     del.textContent = "删这段";
-    bar.appendChild(go); bar.appendChild(re); bar.appendChild(del);
+    bar.appendChild(re); bar.appendChild(del);
     body.appendChild(bar);
     d.appendChild(h); d.appendChild(meta); d.appendChild(body);
     return d;
@@ -1114,10 +1115,14 @@ _SURVEY_JS = """
   }
 
   // 「接着问」：把这段老对话**摆回面板**，光标进输入框，接着往下说
+  // 「回去接着聊」：跳回那一页 + 闪一下当时的框 + 把这段对话摆回面板 + 光标进输入框。
+  // （以前是「回到这一页」和「接着问」两个按钮，用户指出功能重复 —— 合并。）
   function resumeThread(tid){
     var th = null;
     (window.__threads || []).forEach(function(x){ if (x.tid === tid) th = x; });
     if (!th){ toast("没找到这段对话"); return; }
+    // ① 先回课件：跳到那一页，并闪一下当时框的那一块（坐标藏在对话编号里）
+    focusRect(th.page || 1, rectOfTid(tid));
     var flow = document.getElementById("ladderflow");
     if (flow){
       flow.innerHTML = "";
@@ -1146,7 +1151,7 @@ _SURVEY_JS = """
     showTab("ai");
     var qb = document.getElementById("qbox");
     if (qb){ qb.focus(); }
-    toast("接着这段问 —— 前面的来回 AI 还记得");
+    toast("回到第 " + (th.page || "?") + " 页接着聊 —— 前面的来回 AI 还记得");
   }
 
   // ---- 拖框 ----
@@ -1236,17 +1241,6 @@ _SURVEY_JS = """
     if (thd && thd.dataset.tid !== undefined){ toggleThread(thd.dataset.tid); return; }
     var rsm = t.closest && t.closest("[data-resume]");
     if (rsm){ resumeThread(rsm.dataset.resume); return; }
-    // 「回到这一页」：跳过去**并闪一下当时的那个框**
-    // （框的坐标就藏在对话编号里：`m<页>-<x>_<y>_<宽>_<高>`）
-    var gf = t.closest && t.closest("[data-goframe]");
-    if (gf){
-      var tid = gf.dataset.goframe || "";
-      var th = null;
-      (window.__threads || []).forEach(function(x){ if (x.tid === tid) th = x; });
-      var pg = (th && th.page) || 1;
-      if (!focusRect(pg, rectOfTid(tid))) focusRect(pg, null);
-      return;
-    }
     if (t.id === "thall"){
       var ths2 = window.__threads || [];
       var wantAll = !window.__allOpen;
@@ -1385,7 +1379,7 @@ _SURVEY_JS = """
   }
   window.__reloadMarks = loadMarks;
 
-  // 跳到某个框并**闪一下**（对话卡片的「回到这一页」用）
+  // 跳到某个框并**闪一下**（「回去接着聊」用）
   function focusRect(pg, r){
     var f = figOf(pg);
     if (f) f.scrollIntoView({ behavior:"smooth", block:"start" });

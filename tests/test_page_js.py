@@ -119,7 +119,8 @@ def grab(js: str, name: str) -> str:
 
 _svjs = next(b for b in blocks if "function threadCard" in b)
 parts = [grab(_svjs, n) for n in ("esc", "threadCard", "toggleThread",
-                                  "resumeThread", "rectOfTid")]
+                                  "resumeThread", "rectOfTid", "markKey",
+                                  "focusRect")]
 harness = """
 // ---- 最小 DOM 桩：只够这几个函数用 ----
 var __els = {};
@@ -144,6 +145,12 @@ global.document = {
 };
 function showTab(){ global.__tab = arguments[0]; }
 function toast(m){ global.__toast = m; }
+// 「回去接着聊」会去闪那个框 —— 这里给最小桩（本测试只关心"有没有调回去"）
+var activeMark = -1;
+function marks(){ return []; }
+function figOf(){ return null; }
+function updateCtx(){ global.__ctx = (global.__ctx || 0) + 1; }
+var stage = { querySelector: function(){ return null; } };
 
 """ + "\n\n".join(parts) + """
 
@@ -220,8 +227,9 @@ if got:
           got.get("bodyN") == 5, str(got.get("bodyN")))
     check("  气泡里带「我问」标注",
           "我问" in (got.get("turn0") or ""), str(got.get("turn0"))[:80])
-    check("★ 卡片上有「回到这一页」「接着问」「删这段」三个按钮",
-          got.get("btn") == ["回到这一页", "接着问", "删这段"], str(got.get("btn")))
+    check("★ 卡片上只剩两个按钮：回去接着聊 / 删这段"
+          "（用户反馈「回到这一页」和「接着问」功能重复 → 合并）",
+          got.get("btn") == ["回去接着聊", "删这段"], str(got.get("btn")))
     check("★ 展开/收起是翻转（点一次开、再点一次关）",
           got.get("toggle1") is True and got.get("toggle2") is False,
           f"{got.get('toggle1')} → {got.get('toggle2')}")

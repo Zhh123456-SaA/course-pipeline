@@ -289,13 +289,13 @@ check("★★ 打开页面就把账本里的框读回来（账本 = 框的真相
       and "loadMarks(); loadLadder();" in h_sv)
 check("★ 读回来时按「页+矩形」去重（本地已有的不重复画）",
       "function markKey(" in h_sv and "have[markKey(m)]" in h_sv)
-check("★ 「回到这一页」要跳到**那个框**并闪一下，不是只跳页",
-      'go.dataset.goframe' in h_sv and "function focusRect(" in h_sv
+check("★ 「回去接着聊」要跳到**那个框**并闪一下，不是只跳页",
+      're.dataset.resume' in h_sv and "function focusRect(" in h_sv
       and ".mk.flash" in h_sv and "el.classList.add(\"flash\")" in h_sv)
 check("★ 框坐标藏在对话编号里（回得去当时的那个框）",
       "function rectOfTid(" in h_sv and "m(\\d+)-(\\d+)_(\\d+)_(\\d+)_(\\d+)" in h_sv)
 check("  老对话编号（`@p27` 这种）解析不出来就退回只跳页，不炸",
-      "if (!focusRect(pg, rectOfTid(tid))) focusRect(pg, null);" in h_sv)
+      "focusRect(th.page || 1, rectOfTid(tid));" in h_sv)
 # ★ 用户原话：「框是临时的能删，对话是永久的反而不能删，很奇怪。」
 check("★ 对话能删：整段有「删这段」，每一轮有「✕」",
       'del.dataset.delTh' in h_sv and 'dx.dataset.delTurn' in h_sv
