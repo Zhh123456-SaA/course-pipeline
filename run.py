@@ -386,7 +386,8 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
         if not threads:
             continue
         made, skipped = cards_mod.build_cards_from_threads(
-            course, lesson, src.get("file", ""), src.get("sha256", ""), threads)
+            course, lesson, src.get("file", ""), src.get("sha256", ""), threads,
+            question_provider=provider)
         all_cards += made
         all_skipped += skipped
         n_th_cards += len(made)
@@ -396,13 +397,22 @@ def cmd_cards(course: str, sync: bool = False, rebuild: bool = False,
     if n_th_cards:
         report.append(f"[card ] 从「我和 AI 的对话」出了 {n_th_cards} 张"
                       f"（只收 AI 真的给了讲解的那几轮）")
-    elif n_th_seen:
-        # 别让"点了出卡什么都没发生"变成黑箱：说清楚为什么，以及**怎么让它出卡**。
-        report.append(f"[card ] 看了 {n_th_seen} 段对话 / {n_turn_seen} 轮，暂时出 0 张 ——"
-                      f"这些轮里 AI 都只是在反问你，没有给出讲解，"
-                      f"做成卡背面会是空的（那就是垃圾卡）。")
-        report.append("[tip  ] 想让某一段变成卡：在那段对话里说一句「别问了直接讲」，"
-                      "那一轮 AI 会给你完整讲解 —— 下次跑 cards 它就成卡了。")
+    if n_th_seen:
+        # 别让"出了几张"变成黑箱：把两种跳过原因分开报（它们要采取的动作完全不同）。
+        no_expl = sum(1 for r in th_skip_reasons if "没有给出讲解" in r)
+        need_ai = sum(1 for r in th_skip_reasons if "反推" in r)
+        front_fix = sum(1 for r in th_skip_reasons if "表态" in r)
+        bits = [f"对话 {n_th_seen} 段 / {n_turn_seen} 轮 → 出 {n_th_cards} 张"]
+        if no_expl:
+            bits.append(f"{no_expl} 轮 AI 只是在反问你（跳过，那种卡背面是空的）")
+        if front_fix:
+            bits.append(f"{front_fix} 轮你这句是表态、题面得靠 AI 反推")
+        if need_ai:
+            bits.append(f"{need_ai} 轮题面没反推出来（跳过）")
+        report.append("[card ] " + "；".join(bits))
+        if no_expl and not n_th_cards:
+            report.append("[tip  ] 想让某一段变成卡：在那段对话里说一句「别问了直接讲」，"
+                          "那一轮 AI 会给你完整讲解 —— 下次跑 cards 它就成卡了。")
         for r in th_skip_reasons[:3]:
             report.append(f"[skip ] {r}")
 

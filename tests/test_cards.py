@@ -520,6 +520,54 @@ check("  AI 回答太短的不出卡（撑不起卡背）",
 check("  合格的一轮出卡，且不给理由（空理由 = 没被挡）",
       C.thread_turn_cardable(_turn())[0] and C.thread_turn_cardable(_turn())[1] == "")
 
+# ---- 题面必须**像个问题**（用户实测反馈：出过正面写「我不知道啊」的卡）----
+check("★ 表态不算题面：「我不知道啊」「是的」「嗯」都不行",
+      all(C._usable_front(x) == "" for x in
+          ("我不知道啊", "是的", "嗯", "对", "算了", "直接讲", "别问了直接讲")))
+check("★ 陈述也不算题面（打开卡会一头雾水：这要我答什么）",
+      C._usable_front("是的，因为能斯特方程") == "")
+check("  真问题才算：问号/疑问词",
+      C._usable_front("这个图又是什么意思？") == "这个图又是什么意思？"
+      and C._usable_front("为什么前者快后者慢") == "为什么前者快后者慢")
+check("★ 拿不出题面时返回**空理由**（不是硬跳过）——由调用方决定要不要 AI 反推",
+      C.thread_turn_cardable(_turn(q="我不知道啊"), "我也不知道啊") == (False, ""))
+
+# ---- 拿不出题面 → 用 AI 从解答反推（复用既有机制与质量闸门）----
+NOFRONT = {"tid": "m56-1", "page": 56, "n": 1, "title": "我不知道啊",
+           "turns": [{"q": "我不知道啊", "a": "这张表的核心是一句话：细胞内外离子分布"
+                      "是不对称的，靠钠钾泵每消耗一个 ATP 泵出 3 个 Na⁺、泵进 2 个 K⁺。",
+                      "gave_answer": True, "stall": True, "sel": ""}]}
+got, skip = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64, [NOFRONT])
+check("★ 没给 AI 出题能力时：跳过，并说清该怎么跑（别加 --no-ai）",
+      not got and "别加 --no-ai" in skip[0]["reason"], skip[0]["reason"])
+
+got, skip = C.build_cards_from_threads(
+    "生物", "L", "x.pptx", "a" * 64, [NOFRONT],
+    question_provider=lambda t: {"question": "细胞内外离子分布为什么不对称？",
+                                 "model": "m", "tokens": 1})
+check("★★ 给了 AI 出题能力时：从**解答**反推出一道题当卡面",
+      len(got) == 1 and "为什么不对称" in got[0]["fields"]["Front"],
+      got[0]["fields"]["Front"][:100] if got else str(skip))
+check("  卡上标明题面是 AI 出的（以后能分辨）",
+      got and got[0]["source"]["front_kind"] == "ai" and "AI出题" in got[0]["tags"],
+      str(got[0]["source"]) if got else "")
+check("  反推失败就跳过，绝不硬塞一个凑数题面",
+      not C.build_cards_from_threads(
+          "生物", "L", "x.pptx", "a" * 64, [NOFRONT],
+          question_provider=lambda t: {"question": "", "reason": "模型摆烂"})[0])
+
+# ---- 卡背开头那句口头语要去掉（实测看到的卡背第一句）----
+check("★ 去掉开头的口头语（「行，那我讲完你得回答我一个问题。」）",
+      C._strip_lead_filler(
+          "行，那我讲完你得回答我一个问题。这张表的核心是不对称。")
+      .startswith("这张表的核心"), C._strip_lead_filler(
+          "行，那我讲完你得回答我一个问题。这张表的核心是不对称。")[:40])
+check("  只丢**短**的第一句 —— 长句往往是正文，不能丢",
+      C._strip_lead_filler("好的，" + "这是一段很长的正文，" * 4 + "。")
+      .startswith("好的"))
+check("  正常开头的回答一个字不动",
+      C._strip_lead_filler("细胞内外离子分布是不对称的。") == "细胞内外离子分布是不对称的。")
+
 # ---- 重跑幂等：同一段对话跑两遍 → 同样的 id（merge 才去得了重）----
 again, _ = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64, [TH])
 check("★ 重跑同样的对话 → 同样的卡片身份（重跑不会重复制卡）",

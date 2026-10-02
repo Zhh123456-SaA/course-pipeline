@@ -52,44 +52,101 @@ def thread_card_id(sha: str, page: int, tid: str, turn: int = 1) -> str:
     return f"{sha[:12]}:p{page:03d}:th{h}:t{turn}"
 
 
-#: 「别问了直接讲」这类**命令**（不是问题）。它们出现的那一轮往往正是 AI
-#: 终于给出完整讲解的一轮 —— 所以不能因为"它算卡壳"就把这一轮丢掉，
-#: 而是**把题面换成这段对话开头那一问**（那才是你真正想问的）。
+#: 「别问了直接讲」这类**命令**，以及「不知道」这类**不是问题**的话。
+#: 它们出现的那一轮往往正是 AI 终于给出完整讲解的一轮 —— 所以不能因为
+#: "它算卡壳"就把这一轮丢掉，但也**绝不能拿它当题面**：实测出过
+#: 正面写着「我不知道啊」「别问了直接讲」的卡，那种卡没有任何训练意义。
 _GIVE_UP_WORDS = ("直接讲", "别问了", "给答案", "告诉我吧", "别绕")
+_NOT_A_QUESTION = ("不知道", "不清楚", "不明白", "不懂", "不会", "不知道啊",
+                   "没有", "是的", "对", "嗯", "好的", "算了", "太难")
+#: 看起来像问题的字样（没有这些也不一定不是问题，所以只用来"判死"不判生）
+_QUESTION_HINTS = ("？", "?", "吗", "呢", "为什么", "怎么", "什么", "如何",
+                   "哪些", "哪个", "多少", "是不是", "能不能", "有没有")
+
+
+def _usable_front(text: str) -> str:
+    """这句话能不能当卡面（题干）？能就原样返回，不能返回空串。
+
+    两个都必须满足：
+      ① 不是「不知道 / 别问了直接讲 / 是的」这类**表态**（它们不是问题）；
+      ② 看起来像个问题（有问号或疑问词）—— 用户实测反馈：拿一句陈述当题面，
+         打开卡片会一头雾水"这要我回答什么"。
+    """
+    t = (text or "").strip()
+    if len(t) < 6:
+        return ""
+    if any(w in t for w in _GIVE_UP_WORDS):
+        return ""
+    if len(t) <= 8 and any(t.startswith(w) for w in _NOT_A_QUESTION):
+        return ""
+    if not any(h in t for h in _QUESTION_HINTS):
+        return ""
+    return t
 
 
 def _front_question(ask: str, opening: str) -> str:
-    """这一轮的题面：能用自己那句就用，是"命令"或太短就退回**开头那一问**。"""
-    q = (ask or "").strip()
-    if len(q) >= 4 and not any(w in q for w in _GIVE_UP_WORDS):
-        return q
-    o = (opening or "").strip()
-    return o if len(o) >= 4 else ""
+    """这一轮的题面：能用自己那句就用，不能就退回**开头那一问**（也得能用）。"""
+    for cand in (ask, opening):
+        got = _usable_front(cand)
+        if got:
+            return got
+    return ""
 
 
-#: 从对话出卡的闸门：**AI 必须真的讲了**。
+#: 从对话出卡的闸门：**AI 必须真的讲了**，而且得有一个**像问题的题面**。
 #: 为什么要有这道闸门：阶梯追问里大多数轮次 AI 只是在**反问**
 #: （「你先说说膜的主要成分是什么？」），把反问当答案做成卡，就是垃圾卡 ——
 #: 这个项目已经因为垃圾卡返工过一次（见 build_cards 的 docstring）。
+#: 反过来，AI 终于讲了、但你这轮的是一句表态（「不知道啊」「是的」）时，
+#: 也不该硬拿它当题面：交给 `question_provider` 从解答**反推一道题**。
 def thread_turn_cardable(turn: dict, opening: str = "") -> tuple[bool, str]:
     a = (turn.get("a") or "").strip()
-    front = _front_question(turn.get("q") or "", opening)
     if not turn.get("gave_answer"):
         return False, "那一轮 AI 只是在反问你，没有给出讲解 —— 做成卡背面会是空的"
-    if not front:
-        return False, "没有可用的题面（你那句太短/是命令，这段对话开头也没问到东西）"
     if len(a) < 30:
         return False, "AI 那轮的回答太短，撑不起卡背"
+    if not _front_question(turn.get("q") or "", opening):
+        return False, ""       # 空理由 = 题面得靠 AI 反推，由调用方决定（见下）
     return True, ""
 
 
-def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
-                             sha: str, threads: list[dict]) -> tuple[list[dict], list[dict]]:
-    """**一段段子对话** → 卡片。**本函数不联网、不调模型**。
+#: AI 开讲前的口头语（实测：卡背第一句常常是「行，那我讲完你得回答我一个问题。」）
+_LEAD_FILLER = ("行", "好", "嗯", "那我", "那我说", "来，", "先", "翻回", "嗯，")
 
-    只在「AI 真的给了讲解」的那一轮出卡（见 `thread_turn_cardable`），
+
+def _strip_lead_filler(text: str) -> str:
+    """去掉卡背开头那句**口头语**（很短、且像在接话）。
+
+    只在第一句**短**（< 30 字）且以句末标点收尾时才丢 —— 长句往往就是正文，
+    宁可不丢。用户实测看到的卡背第一句是「行，那我讲完你得回答我一个问题。」
+    这种话留在 Anki 卡上纯属噪音。
+    """
+    t = (text or "").strip()
+    if "\n" in t.split("。")[0] and not t.split("\n")[0].strip():
+        t = t.lstrip()
+    head, sep, rest = t.partition("。")
+    if sep and rest.strip() and len(head) < 30 and any(
+            head.startswith(w) for w in _LEAD_FILLER):
+        return rest.strip()
+    head2, sep2, rest2 = t.partition("：")
+    if sep2 and rest2.strip() and len(head2) < 16 and any(
+            head2.startswith(w) for w in _LEAD_FILLER):
+        return rest2.strip()
+    return t
+
+
+def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
+                             sha: str, threads: list[dict],
+                             question_provider=None) -> tuple[list[dict], list[dict]]:
+    """**一段段子对话** → 卡片。
+
+    只在「AI 真的给了讲解」的那一轮出卡（见 `thread_turn_cardable`）：
     正面 = 你当时的问题（+ 框里读出来的原文当语境），背面 = AI 的讲解 + 出处。
     出处里带**对话编号**，以后能回到网页上那段对话继续问。
+
+    题面拿不出来时（你那一轮说的是「不知道啊」「是的」这类表态）：
+    给了 `question_provider` 就**用 AI 从解答反推一道题**（复用既有机制与质量闸门），
+    没给就跳过并如实说明原因 —— 绝不硬塞一个凑数的题面。
     """
     out: list[dict] = []
     skipped: list[dict] = []
@@ -105,12 +162,34 @@ def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
         opening = str(th.get("title") or "")
         for i, t in enumerate(th.get("turns") or [], start=1):
             ok, why = thread_turn_cardable(t, opening)
-            if not ok:
+            front_q = _front_question(t.get("q") or "", opening)
+            if not ok and why:
                 skipped.append({"page": page, "no": i, "lecture": lesson_label,
                                 "reason": f"对话 `{tid}` 第 {i} 轮：{why}"})
                 continue
-            # 题面：这一轮那句，若它是「别问了直接讲」这类命令 → 退回开头那一问
-            front_q = _front_question(t.get("q") or "", opening)
+            front_kind = "user"
+            if not front_q:
+                if question_provider is None:
+                    skipped.append({
+                        "page": page, "no": i, "lecture": lesson_label,
+                        "reason": f"对话 `{tid}` 第 {i} 轮：你这轮说的是表态"
+                                  f"（不是问题），需要 AI 从解答反推题目"
+                                  f"（别加 --no-ai 再跑一次）"})
+                    continue
+                # provider 的契约是**批注字典**（既有的 AI 出题回调就是按它写的），
+                # 所以这里把「这一轮」翻译成同样的形状：a → explanation。
+                # 实测踩到：直接把 turn 递进去，provider 读不到 explanation，
+                # 一律返回"解答太短，不足以出题"，看起来像模型摆烂。
+                gen = question_provider(dict(t, explanation=t.get("a") or "",
+                                             latex="")) or {}
+                front_q = (gen.get("question") or "").strip()
+                front_kind = "ai"
+                if not front_q:
+                    skipped.append({
+                        "page": page, "no": i, "lecture": lesson_label,
+                        "reason": f"对话 `{tid}` 第 {i} 轮：AI 反推题目失败"
+                                  f"（{gen.get('reason') or '未知'}）"})
+                    continue
             # 框里读出来的原文当语境（有就用，没有就纯问题 —— 不硬凑）
             ctx = (t.get("sel") or "").strip()
             out.append({
@@ -118,10 +197,13 @@ def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
                 "deck": deck,
                 "fields": {
                     "Front": render_front(ctx, front_q),
-                    "Back": render_back(t.get("a") or "", "", source),
+                    "Back": render_back(_strip_lead_filler(t.get("a") or ""),
+                                        "", source),
                 },
-                "tags": ["course-pipeline", course, lesson_label, f"p{page}", "对话"],
-                "source": {**source, "kind": "thread", "tid": tid, "turn": i},
+                "tags": ["course-pipeline", course, lesson_label, f"p{page}",
+                         "对话"] + (["AI出题"] if front_kind == "ai" else []),
+                "source": {**source, "kind": "thread", "tid": tid, "turn": i,
+                           "front_kind": front_kind},
                 "crop": None,
             })
     return out, skipped
