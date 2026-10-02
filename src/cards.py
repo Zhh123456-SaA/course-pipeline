@@ -135,6 +135,42 @@ def _strip_lead_filler(text: str) -> str:
     return t
 
 
+#: 助教"给完讲解再考你一句"的开头（阶梯规则要求它必须问，见 serve.LADDER_SYSTEM）。
+#: 实测出现的写法（少一个都会漏）：反向验证 / 反过来考你 / 现在换你答 …
+_TAIL_MARKERS = ("反向验证", "反过来考你", "反过来问你", "反过来考", "换我来考你",
+                 "换我考你", "我考考你", "那考考你", "考考你", "再考你",
+                 "换个角度考", "那我问你", "再问你一个", "你来回答", "你来想想",
+                 "现在换你答", "换你答", "换你来", "该你了", "轮到你", "考你一句")
+
+
+def _strip_tail_question(text: str) -> tuple[str, str]:
+    """去掉卡背**末尾那一句反问**，返回 (卡背, 被砍下来的那句)。
+
+    用户验收原话：「你的卡答案里面还有 ai 的反问，这是不对的」。
+    阶梯的规则要求 AI 给完讲解**必须**再问一个反向验证题 —— 那是**上课**的环节；
+    搬到 Anki 卡上就变成"背面的最后一句是个没人回答的问题"，纯干扰。
+
+    只砍**末尾**那一段（标记词 + 后面带问号），而且标记词必须落在后半段：
+    讲解中间出现的「反过来，如果…」是正文本身，不能动。砍下来的那句不丢，
+    存进卡片的 `source.reverse_q`（以后想在网页上接着答还能找到）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+    # 取**最靠前**的那个合格标记（「我考考你」和「考考你」都命中时，别只砍掉后半个词）
+    cands = [i for i in (t.rfind(mk) for mk in _TAIL_MARKERS) if i >= 0]
+    cands = [i for i in cands
+             if i >= len(t) * 0.4 and ("？" in t[i:] or "?" in t[i:])]
+    if not cands:
+        return t, ""
+    cut = min(cands)
+    tail = t[cut:]
+    head = t[:cut].rstrip().rstrip("：:，,。；; \n")
+    if not head:                      # 全篇都是反问 → 宁可不砍，别把卡背清空
+        return t, ""
+    return head, tail.strip()
+
+
 def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
                              sha: str, threads: list[dict],
                              question_provider=None) -> tuple[list[dict], list[dict]]:
@@ -163,6 +199,10 @@ def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
         for i, t in enumerate(th.get("turns") or [], start=1):
             ok, why = thread_turn_cardable(t, opening)
             front_q = _front_question(t.get("q") or "", opening)
+            # 卡背先洗干净（去掉开头口头语 + 末尾那句反问），**再**拿它去反推题面。
+            # 实测踩到：不先洗，AI 会把末尾那句反问当成"这道题该问什么"，
+            # 于是卡面问一遍、卡背末尾又问同一句。
+            back, rev_q = _strip_tail_question(_strip_lead_filler(t.get("a") or ""))
             if not ok and why:
                 skipped.append({"page": page, "no": i, "lecture": lesson_label,
                                 "reason": f"对话 `{tid}` 第 {i} 轮：{why}"})
@@ -180,8 +220,8 @@ def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
                 # 所以这里把「这一轮」翻译成同样的形状：a → explanation。
                 # 实测踩到：直接把 turn 递进去，provider 读不到 explanation，
                 # 一律返回"解答太短，不足以出题"，看起来像模型摆烂。
-                gen = question_provider(dict(t, explanation=t.get("a") or "",
-                                             latex="")) or {}
+                # ★ 递**洗干净的**正文（不然末尾那句反问会被当成题目）。
+                gen = question_provider(dict(t, explanation=back, latex="")) or {}
                 front_q = (gen.get("question") or "").strip()
                 front_kind = "ai"
                 if not front_q:
@@ -197,13 +237,12 @@ def build_cards_from_threads(course: str, lesson_label: str, source_file: str,
                 "deck": deck,
                 "fields": {
                     "Front": render_front(ctx, front_q),
-                    "Back": render_back(_strip_lead_filler(t.get("a") or ""),
-                                        "", source),
+                    "Back": render_back(back, "", source),
                 },
                 "tags": ["course-pipeline", course, lesson_label, f"p{page}",
                          "对话"] + (["AI出题"] if front_kind == "ai" else []),
                 "source": {**source, "kind": "thread", "tid": tid, "turn": i,
-                           "front_kind": front_kind},
+                           "front_kind": front_kind, "reverse_q": rev_q},
                 "crop": None,
             })
     return out, skipped

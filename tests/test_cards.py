@@ -568,6 +568,52 @@ check("  只丢**短**的第一句 —— 长句往往是正文，不能丢",
 check("  正常开头的回答一个字不动",
       C._strip_lead_filler("细胞内外离子分布是不对称的。") == "细胞内外离子分布是不对称的。")
 
+# ---- 卡背末尾那句**反问**要去掉（用户验收原话：「卡答案里面还有 ai 的反问，
+#      这是不对的」—— 那是助教在考你，不是答案）----
+_LONG = ("这张表的核心是离子分布不对称，靠钠钾泵维持。" * 3)
+for mk in ("反向验证", "反过来考你", "我考考你", "再问你一个", "现在换你答"):
+    h, q = C._strip_tail_question(_LONG + f"{mk}：如果把里外都稀释 10 倍会怎样？")
+    check(f"★ 末尾的「{mk}…」被砍掉（卡背不留没人回答的问题）",
+          h == _LONG.rstrip("。") or h.startswith("这张表的核心"), h[-40:])
+    check(f"  砍下来的那句**不丢**，存起来（{mk}）", q.startswith(mk), q[:30])
+check("★ 讲解**中间**的「反过来…」是正文，不能动",
+      C._strip_tail_question("反过来，细胞要主动运输。这是重点。")[0]
+      == "反过来，细胞要主动运输。这是重点。")
+check("  末尾带标记但**没有问号** → 不动（不是反问）",
+      C._strip_tail_question(_LONG + "反向验证一下上面的推导。")[1] == "")
+check("  标记落在前半段 → 不砍（那不是'末尾的反问'）",
+      C._strip_tail_question("反向验证：先看这张表？" + "后面是正文。" * 20)[1] == "")
+
+_cards_ok, _ = C.build_cards_from_threads(
+    "生物", "L", "x.pptx", "a" * 64,
+    [{"tid": "m9-1", "page": 9, "n": 1, "title": "这图什么意思？",
+      "turns": [{"q": "这图什么意思？",
+                 "a": _LONG + "反向验证：如果反过来会怎样？",
+                 "gave_answer": True, "sel": ""}]}])
+check("★ 走完整条出卡链：卡背没有反问结尾，且反问被记进 source",
+      _cards_ok and "反向验证" not in _cards_ok[0]["fields"]["Back"]
+      and _cards_ok[0]["source"]["reverse_q"].startswith("反向验证"),
+      (_cards_ok[0]["fields"]["Back"][-60:] if _cards_ok else "没出卡"))
+# ★ 实测踩到：不先洗正文就拿去反推，AI 会把末尾那句反问当成题目
+#   → 卡面问一遍、卡背末尾又问同一句。
+_seen: dict = {}
+
+
+def _spy(ann):
+    _seen["text"] = ann.get("explanation", "")
+    return {"question": "这图里的梯度是干什么用的？"}
+
+
+C.build_cards_from_threads(
+    "生物", "L", "x.pptx", "a" * 64,
+    [{"tid": "m9-2", "page": 9, "n": 1, "title": "我不知道啊",
+      "turns": [{"q": "我不知道啊",
+                 "a": _LONG + "现在换你答：那 Ca²⁺ 为什么压那么低？",
+                 "gave_answer": True, "sel": ""}]}],
+    question_provider=_spy)
+check("★ 递给 AI 反推的是**洗干净的正文**（否则末尾反问会被当成题目）",
+      "现在换你答" not in _seen.get("text", ""), _seen.get("text", "")[-50:])
+
 # ---- 重跑幂等：同一段对话跑两遍 → 同样的 id（merge 才去得了重）----
 again, _ = C.build_cards_from_threads("生物", "L", "x.pptx", "a" * 64, [TH])
 check("★ 重跑同样的对话 → 同样的卡片身份（重跑不会重复制卡）",
