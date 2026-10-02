@@ -404,6 +404,88 @@ def ladder_of(root: str, lesson: str = "") -> list[dict]:
     return out
 
 
+def _match_tid(rec: dict, tid: str, page: int) -> bool:
+    """这条记录属不属于要删的那段对话。
+
+    老账本（功能上线前）的来回**没有 tid**，`threads_of` 是按页合成的
+    `@p<页>` 编号。删这种段就按「这一节 + 这一页 + 没有 tid」来匹配。
+    """
+    rec_tid = (rec.get("tid") or "").strip()
+    if tid.startswith("@p"):
+        return not rec_tid and int(rec.get("p") or 0) == int(page or 0)
+    return rec_tid == tid
+
+
+def delete_thread(root: str, lesson: str, tid: str, page: int = 0) -> int:
+    """删掉**一整段对话**（那段来回全部搬走）。返回删掉几条。
+
+    用户原话：「对话删不掉很奇怪 —— 框是临时的能删，对话是永久的反而不能删」。
+    删之前**先备份**：账本是唯一真相源，删错了没法重建，
+    所以每次删都把原文件另存一份 `.ledger/study.json.bak-<时间>`。
+    """
+    n = 0
+    for r in _study_roots(root):
+        p = study_ledger_path(r)
+        data = load_study(r)
+        rec = (data.get("lessons") or {}).get(lesson)
+        if not rec:
+            continue
+        lst = rec.get("ladder") or []
+        keep = [x for x in lst if not _match_tid(x, tid, page)]
+        n += len(lst) - len(keep)
+        if len(keep) == len(lst):
+            continue
+        _backup_study(p)
+        rec["ladder"] = keep
+        save_study(r, data)
+    return n
+
+
+def delete_turn(root: str, lesson: str, tid: str, index: int, page: int = 0) -> int:
+    """删掉一段对话里的**某一轮**（1 起数，按时间先后）。返回删掉几条。"""
+    for r in _study_roots(root):
+        data = load_study(r)
+        rec = (data.get("lessons") or {}).get(lesson)
+        if not rec:
+            continue
+        lst = rec.get("ladder") or []
+        hit = [x for x in lst if _match_tid(x, tid, page)]
+        hit.sort(key=lambda x: (x.get("at") or "", x.get("p") or 0))
+        if not (1 <= index <= len(hit)):
+            continue
+        target = hit[index - 1]
+        keep = [x for x in rec["ladder"] if x is not target]
+        if len(keep) == len(rec["ladder"]):
+            continue
+        _backup_study(study_ledger_path(r))
+        rec["ladder"] = keep
+        save_study(r, data)
+        return 1
+    return 0
+
+
+def _backup_study(path: str) -> str:
+    """删东西之前留一份副本（账本删错了没法重建）。
+
+    放在 `.ledger/backups/` 而不是账本旁边：库的 `.gitignore` 只放行
+    `.ledger/**`，备份要是直接躺在 `.ledger/` 里就会被 git 收进去 ——
+    每删一次多一个文件，历史很快就没法看了。备份本来也不该进版本控制。
+    """
+    import shutil
+    import datetime
+    if not os.path.isfile(path):
+        return ""
+    dst_dir = os.path.join(os.path.dirname(path), "backups")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, f"{os.path.basename(path)}.{stamp}")
+        shutil.copy2(path, dst)
+    except OSError:
+        return ""
+    return dst
+
+
 def marks_of(root: str, lesson: str = "") -> list[dict]:
     """取出账本里的**课件标记（框）**。给了 lesson 就只取那一节，否则全取。
 

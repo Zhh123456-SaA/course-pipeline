@@ -296,6 +296,14 @@ check("★ 框坐标藏在对话编号里（回得去当时的那个框）",
       "function rectOfTid(" in h_sv and "m(\\d+)-(\\d+)_(\\d+)_(\\d+)_(\\d+)" in h_sv)
 check("  老对话编号（`@p27` 这种）解析不出来就退回只跳页，不炸",
       "if (!focusRect(pg, rectOfTid(tid))) focusRect(pg, null);" in h_sv)
+# ★ 用户原话：「框是临时的能删，对话是永久的反而不能删，很奇怪。」
+check("★ 对话能删：整段有「删这段」，每一轮有「✕」",
+      'del.dataset.delTh' in h_sv and 'dx.dataset.delTurn' in h_sv
+      and "function delThread(" in h_sv and "function delTurn(" in h_sv)
+check("★ 删之前必须问一句（账本是唯一真相源）",
+      'confirm("删掉这一整段对话？' in h_sv and 'confirm("删掉这一轮' in h_sv)
+check("★ 删的分支要排在 .thead 展开前面，否则点不到",
+      h_sv.index("closest(\"[data-del-th]\")") < h_sv.index("closest(\".thead\")"))
 check("★ 从账本补 AI 回话时**不覆盖**已有的（免得把你刚看到的刷掉）",
       "!all[i].a && x.a" in h_sv)
 

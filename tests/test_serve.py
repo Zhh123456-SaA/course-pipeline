@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import shutil
@@ -309,6 +310,54 @@ V.record("/api/mark", "mark",
 check("  传库根也能读（与 ladder_of 共用同一套根解析）",
       len(S.marks_of(ROOT2)) >= 1, str(S.marks_of(ROOT2))[:120])
 check("  没有账本的目录 → 空表，不炸", S.marks_of(os.path.join(ROOT, "没这门课")) == [])
+
+# ---------------------------------------------------------------- 4b5 对话能删
+# 用户原话：「那上面这个『标记』功能完全没有任何意义了」之后紧接着的一句：
+# 「框是临时的能删，对话是永久的反而不能删，很奇怪。」—— 那就补上。
+# 两条铁律：① 删之前**先备份**（账本是唯一真相源，删错了没法重建）；
+#          ② 删的是**指定的那一段/那一轮**，别人一条都不能少。
+DEL_LES = LES
+for i in range(1, 4):
+    V.study.append_ladder(LIB, DEL_LES, 60, f"第{i}问", f"第{i}答", tid="m60-1_2_3_4")
+V.study.append_ladder(LIB, DEL_LES, 60, "别人的一段", "别人的回答", tid="m60-9_9_9_9")
+check("  准备：那一段有 3 轮、另一段 1 轮",
+      len([x for x in S.ladder_of(LIB, DEL_LES) if x.get("tid") == "m60-1_2_3_4"]) == 3
+      and len([x for x in S.ladder_of(LIB, DEL_LES) if x.get("tid") == "m60-9_9_9_9"]) == 1)
+
+n = S.delete_turn(LIB, DEL_LES, "m60-1_2_3_4", 2, page=60)
+left = [x for x in S.ladder_of(LIB, DEL_LES) if x.get("tid") == "m60-1_2_3_4"]
+check("★ 删一轮：只少那一轮，剩下的顺序不乱",
+      n == 1 and [x["q"] for x in left] == ["第1问", "第3问"],
+      str([x["q"] for x in left]))
+check("  删某一轮**不动别的对话**",
+      len([x for x in S.ladder_of(LIB, DEL_LES) if x.get("tid") == "m60-9_9_9_9"]) == 1)
+check("★ 删之前留了备份（账本删错了没法重建）",
+      glob.glob(os.path.join(LIB, ".ledger", "backups", "study.json.*")),
+      "没找到备份")
+check("  备份放在 .ledger/backups/ 里（放在 .ledger/ 下会被 git 收进去）",
+      not glob.glob(os.path.join(LIB, ".ledger", "*.bak-*")))
+
+n = S.delete_thread(LIB, DEL_LES, "m60-1_2_3_4", page=60)
+check("★ 删整段：那一段全没了、别的段还在",
+      n == 2 and not [x for x in S.ladder_of(LIB, DEL_LES)
+                      if x.get("tid") == "m60-1_2_3_4"]
+      and len([x for x in S.ladder_of(LIB, DEL_LES)
+               if x.get("tid") == "m60-9_9_9_9"]) == 1, str(n))
+check("  删不存在的段 → 0，不炸也不乱删",
+      S.delete_thread(LIB, DEL_LES, "根本没这段", page=60) == 0
+      and S.delete_turn(LIB, DEL_LES, "m60-9_9_9_9", 99, page=60) == 0)
+
+# 老账本（功能上线前）的来回没有 tid，页面给的是 `@p<页>` 合成编号 —— 也得能删
+V.study.append_ladder(LIB, DEL_LES, 60, "老账本那一问", "老账本那一答")   # 不带 tid
+check("  准备：有一条老记录（没 tid）躺在第 60 页", 
+      len([x for x in S.ladder_of(LIB, DEL_LES)
+           if int(x.get("p") or 0) == 60 and not x.get("tid")]) == 1)
+check("★ 老账本那种「没 tid」的段，按页也能删（不然永远删不掉）",
+      S.delete_thread(LIB, DEL_LES, "@p60", page=60) == 1
+      and not [x for x in S.ladder_of(LIB, DEL_LES)
+               if int(x.get("p") or 0) == 60 and not x.get("tid")]
+      and len([x for x in S.ladder_of(LIB, DEL_LES)
+               if x.get("tid") == "m60-9_9_9_9"]) == 1)
 
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 

@@ -537,6 +537,28 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ask":
                 return self._json(ask_once(os.path.join(self.library_root, course),
                                            payload))
+            # 删掉一段对话 / 一轮来回（用户：「框能删、对话反而不能删，很奇怪」）。
+            # 服务端**先备份再删**（见 study._backup_study）—— 账本删错了没法重建。
+            if path in ("/api/thread-del", "/api/turn-del"):
+                root5 = os.path.join(self.library_root, course) if course \
+                    else self.library_root
+                lesson5 = str(payload.get("lesson") or "")
+                tid5 = str(payload.get("tid") or "")
+                page5 = int(payload.get("page") or 0)
+                if not (lesson5 and tid5):
+                    return self._json({"ok": False, "msg": "缺 lesson/tid"})
+                if path == "/api/thread-del":
+                    n = study.delete_thread(root5, lesson5, tid5, page5)
+                else:
+                    n = study.delete_turn(root5, lesson5, tid5,
+                                          int(payload.get("index") or 0), page5)
+                # 内存里的会话也清掉，免得"删了还接着聊"（历史会从账本重读）
+                with _LOCK:
+                    for k in list(_SESSIONS):
+                        if _SESSIONS[k].get("tid") == tid5:
+                            del _SESSIONS[k]
+                return self._json({"ok": bool(n), "removed": n,
+                                   "msg": "" if n else "没找到那一段（可能已经删过了）"})
             return self._json({"ok": False, "msg": "未知接口"}, 404)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()

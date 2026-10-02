@@ -220,8 +220,8 @@ if got:
           got.get("bodyN") == 5, str(got.get("bodyN")))
     check("  气泡里带「我问」标注",
           "我问" in (got.get("turn0") or ""), str(got.get("turn0"))[:80])
-    check("★ 卡片上有「回到这一页」和「接着问」两个按钮",
-          got.get("btn") == ["回到这一页", "接着问"], str(got.get("btn")))
+    check("★ 卡片上有「回到这一页」「接着问」「删这段」三个按钮",
+          got.get("btn") == ["回到这一页", "接着问", "删这段"], str(got.get("btn")))
     check("★ 展开/收起是翻转（点一次开、再点一次关）",
           got.get("toggle1") is True and got.get("toggle2") is False,
           f"{got.get('toggle1')} → {got.get('toggle2')}")

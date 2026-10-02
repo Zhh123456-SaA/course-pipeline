@@ -847,6 +847,9 @@ figure.pg.tome figcaption{background:#2f6f4e}
 /* ---- 子对话卡片（「我的对话」那段）---- */
 .histhead button.mini{float:right;margin-left:8px}
 button.mini{font-size:12px;padding:2px 9px;border-radius:6px}
+button.mini.danger{color:#e8a1a1;border-color:#5c2b2b}
+button.mini.danger:hover{background:#3a1f1f}
+button.mini.x{float:right;padding:0 6px;margin-left:6px;line-height:1.5}
 .thread{border:1px solid #2c3036;border-radius:9px;margin:7px 0;overflow:hidden;
   background:#1c1f24}
 .thread.on{border-color:#2f6f4e}
@@ -1035,10 +1038,16 @@ _SURVEY_JS = """
       + (th.gave_answer ? " · 给了完整讲解" : "");
     var body = document.createElement("div");
     body.className = "tbody";
-    (th.turns || []).forEach(function(x){
+    (th.turns || []).forEach(function(x, ti){
       var q = document.createElement("div");
       q.className = "tq";
       q.innerHTML = '<span class="who">我问</span>' + esc(x.q || "");
+      // 每一轮也能单独删（打错字、AI 答得离谱的那一轮）
+      var dx = document.createElement("button");
+      dx.className = "mini danger x"; dx.dataset.delTurn = String(ti + 1);
+      dx.dataset.tid = th.tid; dx.dataset.page = String(th.page || 0);
+      dx.textContent = "✕";
+      q.appendChild(dx);
       body.appendChild(q);
       if (x.a){
         var a = document.createElement("div");
@@ -1055,10 +1064,46 @@ _SURVEY_JS = """
     var re = document.createElement("button");
     re.className = "mini"; re.dataset.resume = th.tid;
     re.textContent = "接着问";
-    bar.appendChild(go); bar.appendChild(re);
+    // 删掉整段（用户：「框是临时的能删，对话是永久的反而不能删，很奇怪」）
+    var del = document.createElement("button");
+    del.className = "mini danger"; del.dataset.delTh = th.tid;
+    del.dataset.delPage = String(th.page || 0);
+    del.textContent = "删这段";
+    bar.appendChild(go); bar.appendChild(re); bar.appendChild(del);
     body.appendChild(bar);
     d.appendChild(h); d.appendChild(meta); d.appendChild(body);
     return d;
+  }
+
+  // 删掉一轮来回 / 整段对话（都要先问一句 —— 账本是唯一真相源）
+  // 注意：提示语里**不能出现换行转义**（Python 三引号会把它变成真换行，
+  // 嵌进 JS 就成了语法错、整块脚本不执行 —— test_page_js 抓过两次）。
+  function delTurn(tid, page, idx){
+    if (!confirm("删掉这一轮（我问 + AI 回）？账本会先备份一份再删，删错了还能捞回来。"))
+      return;
+    srvPost("/api/turn-del", {
+      course: window.__COURSE__ || "", lesson: document.body.dataset.lesson || "",
+      tid: tid, page: page, index: idx
+    }, function(j){
+      if (j && j.ok){ toast("已删掉 1 轮"); if (window.__reloadLadder) window.__reloadLadder(); }
+      else { toast((j && j.msg) || "没删掉"); }
+    });
+  }
+
+  function delThread(tid, page){
+    if (!confirm("删掉这一整段对话？账本会先备份一份再删；"
+                 + "笔记里那份要下次重跑 render 才会跟着消失。"))
+      return;
+    srvPost("/api/thread-del", {
+      course: window.__COURSE__ || "", lesson: document.body.dataset.lesson || "",
+      tid: tid, page: page
+    }, function(j){
+      if (j && j.ok){
+        toast("已删掉这一段（" + j.removed + " 轮）");
+        if (window.__curTid === tid) window.__curTid = "";
+        if (window.__reloadLadder) window.__reloadLadder();
+      } else { toast((j && j.msg) || "没删掉"); }
+    });
   }
 
   // 展开 / 收起一段对话（记住状态，重新渲染后不还原）
@@ -1179,6 +1224,14 @@ _SURVEY_JS = """
     // ★ 子对话卡片：点标题展开/收起；点「接着问」把老对话摆回来继续聊。
     //   这两个分支必须**排在** `dataset.gopage` 前面 —— 卡片里的按钮
     //   也带 gopage，顺序反了就会被当成"只是跳页"，永远点不到「接着问」。
+    var dth = t.closest && t.closest("[data-del-th]");
+    if (dth){ delThread(dth.dataset.delTh, parseInt(dth.dataset.delPage, 10)); return; }
+    var dtn = t.closest && t.closest("[data-del-turn]");
+    if (dtn){
+      delTurn(dtn.dataset.tid, parseInt(dtn.dataset.page, 10),
+              parseInt(dtn.dataset.delTurn, 10));
+      return;
+    }
     var thd = t.closest && t.closest(".thead");
     if (thd && thd.dataset.tid !== undefined){ toggleThread(thd.dataset.tid); return; }
     var rsm = t.closest && t.closest("[data-resume]");
