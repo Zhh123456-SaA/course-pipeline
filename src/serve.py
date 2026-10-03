@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import engine
 import lesson_html
 import study
+import workbench
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -403,52 +404,15 @@ class Handler(BaseHTTPRequestHandler):
         with open(p, "rb") as f:
             self._send(200, f.read(), ctype)
 
-    def _index(self) -> None:
-        root = self.course_root()
-        rows = []
-        if os.path.isdir(self.library_root):
-            for c in sorted(os.listdir(self.library_root)):
-                cd = os.path.join(self.library_root, c)
-                ld = os.path.join(cd, "lessons")
-                if not os.path.isdir(ld) or c.startswith("."):
-                    continue
-                files = sorted(f for f in os.listdir(ld) if f.endswith(".html"))
-                if not files:
-                    continue
-                items = []
-                for f in files:
-                    try:
-                        head = open(os.path.join(ld, f), encoding="utf-8",
-                                    errors="replace").read(4000)
-                    except OSError:
-                        continue
-                    m = re.search(r'data-mode="([^"]+)"', head)
-                    mode = m.group(1) if m else "?"
-                    tag = {"survey": "📖 过课件", "ask-first": "❓ 先问后看",
-                           "teach-first": "✍️ 先教后考"}.get(mode, mode)
-                    items.append((tag, f, mode))
-                items.sort(key=lambda x: (x[2] != "survey", x[1]))
-                lis = "".join(
-                    f'<li><span class="tag">{t}</span>'
-                    f'<a href="/c/{urllib.parse.quote(c)}/lessons/{urllib.parse.quote(f)}">'
-                    f'{f[:-5]}</a></li>' for t, f, _m in items)
-                rows.append(f"<h2>{c}</h2><ul>{lis}</ul>")
-        body = ("<!DOCTYPE html><html lang=zh-CN><head><meta charset=utf-8>"
-                "<title>学习库</title><style>"
-                "body{font:16px/1.7 -apple-system,'Segoe UI','PingFang SC',sans-serif;"
-                "max-width:900px;margin:40px auto;padding:0 20px;color:#1f2328}"
-                "a{color:#2f6f4e;text-decoration:none}a:hover{text-decoration:underline}"
-                "li{margin:6px 0}.tag{display:inline-block;font-size:12px;padding:1px 8px;"
-                "border-radius:99px;background:#eef5f0;color:#2f6f4e;margin-right:8px}"
-                "h2{margin:28px 0 8px;font-size:19px}"
-                ".note{background:#eef5f0;border-radius:10px;padding:12px 16px;font-size:14px}"
-                "</style></head><body>"
-                "<h1>学习库</h1>"
-                '<div class="note">服务在跑 —— 页面上划的线、提的问题、自评，'
-                "<b>都会直接进账本，不用再导出再导入</b>。"
-                "在这个页面里点开任何一页即可。</div>"
-                + ("".join(rows) or "<p>还没有生成过学习页。</p>")
-                + "</body></html>")
+    def _home(self) -> None:
+        """学习工作台（首页）。数据全从账本现算，见 workbench 模块。"""
+        body = workbench.render_home(workbench.home_data(self.library_root))
+        self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _course(self, course: str) -> None:
+        """一门课的页面：统计 + 各节课页入口。"""
+        st = workbench.course_stats(self.library_root, course)
+        body = workbench.render_course({}, st)
         self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def course_root(self) -> str:
@@ -460,8 +424,16 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
         try:
+            # 首页 = **学习工作台**（用户原话：「让我可以直接进入这个工作台，
+            # 选择学习什么东西而不是全都要回归 DSH」）
             if path in ("/", "/index.html"):
-                return self._index()
+                return self._home()
+            if path == "/api/home":
+                return self._json({"ok": True,
+                                   "home": workbench.home_data(self.library_root)})
+            m0 = re.match(r"^/_c/([^/]+)$", path)
+            if m0:
+                return self._course(urllib.parse.unquote(m0.group(1)))
             if path == "/api/ping":
                 ok, why = engine.available()
                 return self._json({"ok": True, "engine": ok, "why": why,
