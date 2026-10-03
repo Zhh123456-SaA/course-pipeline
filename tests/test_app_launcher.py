@@ -102,6 +102,13 @@ if os.path.isfile(lnk):
 
 check("  install_app 的图标生成函数可重复调用（幂等，不依赖已有文件）",
       True)
+# ★ 实测事故：`.app-profile/` 是 Edge 的运行时数据（54 MB / 372 个文件），
+#   第一次提交时被 `git add -A` 一起收了进去，推上去才发现。
+#   这条断言就是防止它再来一次。
+_gi = os.path.join(PROJ, ".gitignore")
+check("★★ .app-profile 在忽略名单里（54 MB 的浏览器 profile 不能进仓库）",
+      os.path.isfile(_gi) and any(ln.strip() == ".app-profile/"
+                                  for ln in open(_gi, encoding="utf-8")))
 tmp = os.path.join(tempfile.gettempdir(), "ico-test.ico")
 shutil.rmtree(tmp, ignore_errors=True)
 try:
