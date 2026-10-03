@@ -384,6 +384,16 @@ for _f, _need in (("启动学习库.bat", "run.py serve"),
         check(f"  {_f} 能被 GBK 解开、且关键行在",
               bool(_try_gbk(_raw)) and _need in _try_gbk(_raw))
         check(f"  {_f} 没有 UTF-8 BOM", _raw[:3] != b"\xef\xbb\xbf", str(list(_raw[:3])))
+        check(f"  {_f} 是 CRLF 行尾（cmd 对 LF 的 .bat 有解析毛病）",
+              _raw.count(b"\r\n") > 5 and _raw.count(b"\n") == _raw.count(b"\r\n"),
+              f"CRLF={_raw.count(chr(13).encode()+chr(10).encode())} "
+              f"LF={_raw.count(chr(10).encode())}")
+# 光工作区对没用：`.gitattributes` 里那条 `* text=auto eol=lf` 会让**新克隆**的仓库
+# 把 .bat 签出成 LF（"这台机器好好的，换台机器双击就废"）。必须有例外规则。
+_ga = os.path.join(_root, ".gitattributes")
+check("★ .gitattributes 给 .bat 留了 CRLF 例外（否则新克隆出来的 .bat 是 LF）",
+      os.path.isfile(_ga) and any("*.bat" in ln and "crlf" in ln.lower()
+                                  for ln in open(_ga, encoding="utf-8")))
 
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 

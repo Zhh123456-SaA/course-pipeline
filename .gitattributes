@@ -1,1 +1,7 @@
 * text=auto eol=lf
+
+# ★ .bat 必须是 CRLF：cmd.exe 对 LF 结尾的 .bat 有已知的解析毛病
+#   （if 块、标签、goto 都可能出问题），而上面那条 `eol=lf` 会让**新克隆的仓库**
+#   把 .bat 签出成 LF —— 也就是说"在你这台机器上好好的，换台机器双击就废"。
+#   实测踩到过：git 提交时报 "CRLF will be replaced by LF"。
+*.bat text eol=crlf
