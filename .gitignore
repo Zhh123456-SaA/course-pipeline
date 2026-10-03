@@ -4,3 +4,7 @@ __pycache__/
 
 # 本机配置：学习库放在哪（每个人路径不同，不入库）
 library.path
+
+# 桌面应用的 Edge profile（运行时数据，几十 MB，绝不入库）
+.app-profile/
+
