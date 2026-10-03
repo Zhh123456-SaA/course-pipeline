@@ -8,3 +8,7 @@ library.path
 # 桌面应用的 Edge profile（运行时数据，几十 MB，绝不入库）
 .app-profile/
 
+.app-launch.log
+.app-server.log
+.app-*.html
+
