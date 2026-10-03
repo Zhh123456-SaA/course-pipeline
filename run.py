@@ -836,6 +836,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--course", default="",
                     help="课程名（对应 <学习库>\\<课程名>）；serve 时可省略")
     ap.add_argument("--port", type=int, default=8021, help="serve 动作：端口")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="serve 动作：绑哪个地址。默认 127.0.0.1（只有本机能连）；"
+                         "要让平板/手机连，用 0.0.0.0")
     ap.add_argument("--open-browser", action="store_true",
                     help="serve 动作：起来后自动打开浏览器")
     ap.add_argument("--no-images", action="store_true", help="不渲染页图")
@@ -876,7 +879,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.action == "serve":
         serve_mod.serve(library_root(), course=args.course, port=args.port,
-                        open_browser=args.open_browser)
+                        host=args.host, open_browser=args.open_browser)
         return 0
 
     lines: list[str] = []

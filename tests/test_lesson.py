@@ -296,6 +296,16 @@ check("★ 框坐标藏在对话编号里（回得去当时的那个框）",
       "function rectOfTid(" in h_sv and "m(\\d+)-(\\d+)_(\\d+)_(\\d+)_(\\d+)" in h_sv)
 check("  老对话编号（`@p27` 这种）解析不出来就退回只跳页，不炸",
       "focusRect(th.page || 1, rectOfTid(tid));" in h_sv)
+# ★ 平板/触摸屏（用户要在平板上手写作答 —— 这条路不通，数理计划就得改）
+check("★★ 触摸屏上手指拖动会被当成滚页面 → 必须有个「标框」开关",
+      'id="mkbtn"' in h_sv and "function setMarkMode(" in h_sv
+      and "#stage.marking .layer{touch-action:none}" in h_sv)
+check("★ 画完一个框**自动退出**标框模式（滚动立刻恢复，不用手动点回去）",
+      "if (markMode) setMarkMode(false);" in h_sv)
+check("★ 手指滚动时浏览器取消指针序列 → 必须清掉 drag（否则下次抬手凭空多一个框）",
+      'addEventListener("pointercancel"' in h_sv and "pointercancel\", function(){ drag = null; }" in h_sv)
+check("  开关状态看得见（按钮变字 + 变绿）",
+      '"✍️ 标框中（点此退出）"' in h_sv and 'classList.toggle("mk-on"' in h_sv)
 # ★ 用户原话：「框是临时的能删，对话是永久的反而不能删，很奇怪。」
 check("★ 对话能删：整段有「删这段」，每一轮有「✕」",
       'del.dataset.delTh' in h_sv and 'dx.dataset.delTurn' in h_sv

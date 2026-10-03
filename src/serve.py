@@ -579,6 +579,23 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def lan_ip() -> str:
+    """本机在局域网里的地址（给平板/手机用）。
+
+    不连外网也能算出来：向一个（不一定通的）地址开个 UDP 套接字，问内核
+    "走这张网卡出去时，我的源地址是谁" —— 不会真的发包。
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
 def serve(library_root: str, course: str = "", host: str = "127.0.0.1",
           port: int = 8021, open_browser: bool = False) -> None:
     Handler.library_root = os.path.abspath(library_root)
@@ -595,6 +612,18 @@ def serve(library_root: str, course: str = "", host: str = "127.0.0.1",
     url = f"http://{host}:{port}/"
     print(f"学习库服务已启动：{url}")
     print(f"  库目录：{Handler.library_root}")
+    # ★ 平板/手机要连上来，得绑 0.0.0.0 并且**告诉用户该输哪个地址**
+    #   （用户不会去查 IP；不给这一步，"平板上试试"就无从下手）。
+    if host not in ("127.0.0.1", "localhost"):
+        ip = lan_ip()
+        if ip:
+            print(f"  ★ 平板/手机请开：http://{ip}:{port}/")
+            print(f"    （和电脑连同一个 Wi-Fi；打完收工按 Ctrl+C 关掉，"
+                  f"关掉前同一网络的人都能打开这个页面 —— 别在公共 Wi-Fi 上开着）")
+        else:
+            print("  （要平板连：把上面的地址换成这台电脑的局域网 IP，端口不变）")
+    else:
+        print("  （只有本机能连。要让平板连：python run.py serve --host 0.0.0.0）")
     print("  Ctrl+C 停止")
     if open_browser:
         import webbrowser

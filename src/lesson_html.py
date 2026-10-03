@@ -793,6 +793,12 @@ button.primary{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 figure.pg{position:relative;margin:0 0 16px;line-height:0;border-radius:10px;
   overflow:hidden;box-shadow:0 10px 40px -12px rgba(0,0,0,.6)}
 figure.pg img{width:100%;display:block;background:#fff;user-select:none;-webkit-user-drag:none}
+/* ★ 平板/触摸屏：手指拖动默认被浏览器当成**滚页面**，框根本拉不出来
+   （`touch-action` 默认是 auto）。所以给一个「标框」开关：开着的时候
+   才把这一层的触摸手势交给页面（touch-action:none），画完一个框自动退出，
+   滚动立刻恢复 —— 手指滚课件和手指画框都要能用。 */
+#stage.marking .layer{touch-action:none}
+button.mk-on{background:#2f6f4e;border-color:#2f6f4e;color:#fff}
 figure.pg figcaption{position:absolute;left:10px;top:10px;font-size:12px;line-height:1.6;
   background:rgba(0,0,0,.55);color:#fff;border-radius:99px;padding:2px 10px;
   pointer-events:none;font-variant-numeric:tabular-nums}
@@ -900,6 +906,23 @@ _SURVEY_JS = """
   var drag = null, editorFor = -1, curPage = 1;
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // ---- 标框模式（平板/触摸屏用）-------------------------------------------
+  // 手指在页面上拖动，浏览器默认理解为"滚页面"，框拉不出来。开着这个模式时
+  // 才把触摸手势交给页面；**画完一个框自动退出**，滚动立刻恢复。
+  // 桌面鼠标不受影响（鼠标拖动本来就画框，这个开关对鼠标只是多一句话）。
+  var markMode = false;
+  function setMarkMode(on){
+    markMode = !!on;
+    var st2 = document.getElementById("stage");
+    if (st2) st2.classList.toggle("marking", markMode);
+    var b = document.getElementById("mkbtn");
+    if (b){
+      b.classList.toggle("mk-on", markMode);
+      b.textContent = markMode ? "✍️ 标框中（点此退出）" : "✍️ 标框";
+    }
+    toast(markMode ? "现在手指拖动 = 画框（画完自动退出）" : "已退出标框，手指拖动 = 滚页面");
+  }
   function esc(s){
     return String(s).replace(/[&<>"]/g, function(c){
       return ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]; });
@@ -1164,6 +1187,9 @@ _SURVEY_JS = """
              y0: (e.clientY - b.top) / b.height * 100, el2: null };
     layer.setPointerCapture(e.pointerId);
   });
+  // ★ 手指滚动页面时浏览器会**取消**这个指针序列（pointercancel）。
+  //   不处理的话 `drag` 会一直挂着，下一次抬手就会凭空画出一个框。
+  stage.addEventListener("pointercancel", function(){ drag = null; });
   stage.addEventListener("pointermove", function(e){
     if (!drag) return;
     var b = drag.el.getBoundingClientRect();
@@ -1195,6 +1221,8 @@ _SURVEY_JS = """
     // ★ ① 光标直接进侧栏输入框 —— 拖完就能打字，不用再点任何按钮
     activeMark = marks().length - 1;
     updateCtx();
+    // 平板：画完一个框自动退出标框模式（滚动立刻恢复，不用手动点回去）
+    if (markMode) setMarkMode(false);
     var qb = document.getElementById("qbox");
     if (qb){ showTab("ai"); qb.focus(); }
     else if (!ok) toast("已记下（本地 —— 没连上服务，最后要导出）");
@@ -1275,6 +1303,7 @@ _SURVEY_JS = """
       return;
     }
     if (t.id === "savemk"){ commitEditor(); return; }
+    if (t.id === "mkbtn"){ setMarkMode(!markMode); return; }
     if (t.id === "cancelmk"){ hideEditor(); return; }
     if (t.id === "askai"){
       var v = document.getElementById("editor").querySelector("textarea").value.trim();
@@ -1604,6 +1633,7 @@ def build_survey(course_label: str, chapter: dict, pages: list[dict],
     <input id="pinput" value="1" inputmode="numeric">
     <span class="hint">/ {len(plist)} 页</span>
     <span class="hint">滚轮往下 · <b>拖个框就能问</b></span>
+    <button id="mkbtn" title="平板/触摸屏：先点这里，再用手指拖框（画完一个自动退出）">✍️ 标框</button>
     <button id="clrpage">清空本页</button>
     <button id="topbtn">回顶部</button>
     <button id="expbtn">导出</button>

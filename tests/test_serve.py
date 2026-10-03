@@ -359,6 +359,32 @@ check("★ 老账本那种「没 tid」的段，按页也能删（不然永远�
       and len([x for x in S.ladder_of(LIB, DEL_LES)
                if x.get("tid") == "m60-9_9_9_9"]) == 1)
 
+# ---------------------------------------------------------------- 4e 平板能用
+# 用户要在平板上学习（数理还要手写）—— 默认只绑 127.0.0.1，平板**根本连不上**；
+# 而且他不知道该输哪个网址。所以：绑 0.0.0.0 时要**把局域网地址打出来**。
+_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "src", "serve.py"), encoding="utf-8").read()
+check("★ 服务会算出局域网地址（平板要输的就是它）", "def lan_ip(" in _src)
+check("★ 绑 0.0.0.0 时把「平板/手机请开：http://…」打出来",
+      "平板/手机请开" in _src and "lan_ip()" in _src)
+check("  默认仍只绑本机，并提示怎么开给平板",
+      'host: str = "127.0.0.1"' in _src and "--host 0.0.0.0" in _src)
+_ip = V.lan_ip()
+check("  lan_ip() 返回一个像样的地址（或空串，但绝不炸）",
+      _ip == "" or (_ip.count(".") == 3), repr(_ip))
+
+# 两个启动器都要在，且都是 GBK（cmd 按系统码页读它）
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _f, _need in (("启动学习库.bat", "run.py serve"),
+                  ("平板访问.bat", "--host 0.0.0.0")):
+    _p = os.path.join(_root, _f)
+    check(f"★ {_f} 在（用户只会双击，不会敲命令）", os.path.isfile(_p))
+    if os.path.isfile(_p):
+        _raw = open(_p, "rb").read()
+        check(f"  {_f} 能被 GBK 解开、且关键行在",
+              bool(_try_gbk(_raw)) and _need in _try_gbk(_raw))
+        check(f"  {_f} 没有 UTF-8 BOM", _raw[:3] != b"\xef\xbb\xbf", str(list(_raw[:3])))
+
 # ---------------------------------------------------------------- 4c 知识点接口（侧栏用）
 
 KCSDIR = os.path.join(ROOT, "库K")
